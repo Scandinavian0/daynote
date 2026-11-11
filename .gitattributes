@@ -1,0 +1,2 @@
+# This signed test fixture must keep its exact bytes across Windows checkouts.
+src-tauri/tests/fixtures/update-payload.txt -text

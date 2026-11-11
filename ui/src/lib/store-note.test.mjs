@@ -10,6 +10,7 @@ async function withStore(run) {
   const writes = [];
   let failNext = false;
   let nextReadGate;
+  let nextWriteGate;
   let interval;
   const originalInterval = globalThis.setInterval;
   const originalTimeout = globalThis.setTimeout;
@@ -18,6 +19,9 @@ async function withStore(run) {
     async call(tool, args) {
       if (tool === "set_day_note") {
         writes.push({ ...args });
+        const gate = nextWriteGate;
+        nextWriteGate = undefined;
+        if (gate) await gate;
         if (failNext) { failNext = false; throw new Error("database busy"); }
         notes.set(args.date, args.content);
         return {};
@@ -62,6 +66,11 @@ async function withStore(run) {
       holdNextRead: () => {
         let release;
         nextReadGate = new Promise((resolve) => { release = resolve; });
+        return release;
+      },
+      holdNextWrite: () => {
+        let release;
+        nextWriteGate = new Promise((resolve) => { release = resolve; });
         return release;
       },
     });
@@ -116,5 +125,44 @@ test("an older refresh cannot overwrite a newer note after its save succeeds", a
     release();
     await stale;
     assert.equal(store.note, "newer draft");
+  });
+});
+
+test("preparing an update refuses a failed note save and keeps the draft retryable", async () => {
+  await withStore(async ({ store, notes, failOnce }) => {
+    const date = store.date;
+    store.editNote("keep this before restarting");
+    failOnce();
+    assert.equal(await store.prepareForUpdate(), false);
+    await store.refresh();
+    assert.equal(store.note, "keep this before restarting");
+    assert.equal(await store.prepareForUpdate(), true);
+    assert.equal(notes.get(date), "keep this before restarting");
+  });
+});
+
+test("preparing an update waits for an active write and saves drafts from every date", async () => {
+  await withStore(async ({ store, notes, holdNextWrite, failOnce }) => {
+    const firstDate = store.date;
+    store.editNote("older unsaved date");
+    failOnce();
+    await store.flushNote();
+    failOnce();
+    store.go("2026-11-12");
+    await new Promise((resolve) => setImmediate(resolve));
+    store.editNote("active draft");
+    const release = holdNextWrite();
+    const active = store.flushNote();
+    await new Promise((resolve) => setImmediate(resolve));
+    store.editNote("newest draft");
+    let settled = false;
+    const preparing = store.prepareForUpdate().then((value) => { settled = true; return value; });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "an active database write must finish before installing");
+    release();
+    await active;
+    assert.equal(await preparing, true);
+    assert.equal(notes.get(firstDate), "older unsaved date");
+    assert.equal(notes.get("2026-11-12"), "newest draft");
   });
 });

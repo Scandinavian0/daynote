@@ -6,6 +6,15 @@ import { dirname, resolve, join } from 'node:path';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 if (process.platform !== 'win32') throw new Error('Build the Windows release on Windows.');
+const unsigned = process.argv.includes('--unsigned');
+if (!unsigned && !process.env.TAURI_SIGNING_PRIVATE_KEY) {
+  throw new Error('Set TAURI_SIGNING_PRIVATE_KEY for a release, or use --unsigned for a local installer test.');
+}
+const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
+const config = JSON.parse(readFileSync(join(root, 'src-tauri/tauri.conf.json'), 'utf8'));
+if (config.version !== version || !readFileSync(join(root, 'Cargo.toml'), 'utf8').includes(`version = "${version}"`)) {
+  throw new Error('package.json, Cargo.toml and tauri.conf.json versions must match.');
+}
 function run(file, args) {
   const result = spawnSync(file, args, { cwd: root, stdio: 'inherit', windowsHide: true });
   if (result.error) throw result.error;
@@ -19,8 +28,7 @@ run('cargo', ['build', '--release', '--locked', '-p', 'daynote-cli']);
 mkdirSync(join(root, 'src-tauri/binaries'), { recursive: true });
 copyFileSync(join(root, 'target/release/daynote-cli.exe'), join(root, `src-tauri/binaries/daynote-cli-${triple}.exe`));
 run(process.execPath, [join(root, 'scripts/third-party-notices.mjs')]);
-run(process.execPath, [join(root, 'node_modules/@tauri-apps/cli/tauri.js'), 'build', '--config', 'src-tauri/tauri.release.conf.json', '--bundles', 'nsis', '--', '--locked']);
-const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
+run(process.execPath, [join(root, 'node_modules/@tauri-apps/cli/tauri.js'), 'build', '--config', 'src-tauri/tauri.release.conf.json', '--config', JSON.stringify({ bundle: { createUpdaterArtifacts: !unsigned } }), '--bundles', 'nsis', '--', '--locked']);
 const out = join(root, 'dist');
 mkdirSync(out, { recursive: true });
 const source = join(root, 'target/release/bundle/nsis');
@@ -30,4 +38,24 @@ const filename = `DayNote-${version}-windows-x64-setup.exe`;
 copyFileSync(join(source, installer), join(out, filename));
 const digest = createHash('sha256').update(readFileSync(join(out, filename))).digest('hex');
 writeFileSync(join(out, 'SHA256SUMS.txt'), `${digest}  ${filename}\n`);
+if (!unsigned) {
+  const signature = readFileSync(join(source, `${installer}.sig`), 'utf8').trim();
+  const signedComment = Buffer.from(signature, 'base64').toString('utf8');
+  if (!signedComment.includes(`\tversion:${version}\n`)) {
+    throw new Error('Updater signature must be bound to the release version.');
+  }
+  copyFileSync(join(source, `${installer}.sig`), join(out, `${filename}.sig`));
+  const notes = readFileSync(join(root, `docs/releases/v${version}.md`), 'utf8');
+  writeFileSync(join(out, 'latest.json'), JSON.stringify({
+    version,
+    notes,
+    pub_date: new Date().toISOString(),
+    platforms: {
+      'windows-x86_64': {
+        signature,
+        url: `https://github.com/Scandinavian0/daynote/releases/download/v${version}/${filename}`,
+      },
+    },
+  }, null, 2) + '\n');
+}
 console.log(`Release ready: ${join(out, filename)}`);

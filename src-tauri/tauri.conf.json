@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "DayNote",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "local.daynote.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -13,6 +13,14 @@
     "windows": [],
     "security": {
       "csp": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNBMzBCRjNCQzU3NkMzNTcKUldSWHczYkZPNzh3T25rYVBJZ2RhTzM0VG5XWklnbTd0V3UwQTBvS1hPRXpCVXZFWmVJcG1NWFMK",
+      "endpoints": ["https://github.com/Scandinavian0/daynote/releases/latest/download/latest.json"],
+      "requireSignedVersion": true,
+      "windows": { "installMode": "passive" }
     }
   },
   "bundle": {

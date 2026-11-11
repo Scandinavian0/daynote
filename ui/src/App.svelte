@@ -4,6 +4,7 @@
   import { onMount } from "svelte";
   import type { Task } from "./lib/types.ts";
   import { store } from "./lib/store.svelte.ts";
+  import { updater } from "./lib/updater.svelte.ts";
   import { inTauri } from "./lib/backend.ts";
   import { monthDay, relativeDay, weekday } from "./lib/dates.ts";
   import { parseQuick } from "./lib/quickparse.ts";
@@ -11,12 +12,14 @@
   import Icon from "./components/Icon.svelte";
   import Settings from "./components/Settings.svelte";
   import TaskRow from "./components/TaskRow.svelte";
+  import Updater from "./components/Updater.svelte";
 
   onMount(() => {
     store.init();
+    const stopUpdates = updater.start();
     const flush = () => store.flushNote();
     window.addEventListener("blur", flush);
-    return () => window.removeEventListener("blur", flush);
+    return () => { window.removeEventListener("blur", flush); stopUpdates(); };
   });
 
   const app = $derived(store.app);
@@ -91,6 +94,10 @@
   }
 
   function onKey(e: KeyboardEvent) {
+    if (updater.dialogOpen) {
+      if (e.key === "Escape") { e.preventDefault(); updater.defer(); }
+      return;
+    }
     if (e.key !== "Escape") return;
     if (store.openId !== null) store.openId = null;
     else if (store.view === "settings") store.view = "list";
@@ -130,7 +137,7 @@
 
 <div class="shell" class:expanded={app.expanded} class:solid={!app.glass || !inTauri} class:preview={!inTauri}>
   {#if app.expanded}
-    <aside class="side" data-tauri-drag-region>
+    <aside class="side" data-tauri-drag-region inert={updater.dialogOpen}>
       <div class="brand" data-tauri-drag-region>
         <span class="logo" data-tauri-drag-region></span>
         <span data-tauri-drag-region>DayNote</span>
@@ -143,7 +150,7 @@
     </aside>
   {/if}
 
-  <main>
+  <main inert={updater.dialogOpen}>
     <header data-tauri-drag-region>
       <div class="day" data-tauri-drag-region>
         <h1 data-tauri-drag-region>{store.view === "settings" ? "设置" : dayName}</h1>
@@ -255,7 +262,7 @@
   </main>
 
   {#if app.expanded}
-    <aside class="note-pane">
+    <aside class="note-pane" inert={updater.dialogOpen}>
       <header data-tauri-drag-region>
         <span class="pane-title" data-tauri-drag-region>便签</span>
         {@render windowControls()}
@@ -265,7 +272,7 @@
   {/if}
 
   {#if store.toast}
-    <div class="toast" role="status">
+    <div class="toast" role="status" inert={updater.dialogOpen}>
       <span>{store.toast.text}</span>
       {#if store.toast.undo}
         <button
@@ -280,6 +287,7 @@
       {/if}
     </div>
   {/if}
+  <Updater />
 </div>
 
 <style>

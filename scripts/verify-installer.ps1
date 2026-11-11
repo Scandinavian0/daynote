@@ -1,4 +1,7 @@
-param([Parameter(Mandatory = $true)][string]$Installer)
+param(
+    [Parameter(Mandatory = $true)][string]$Installer,
+    [string]$BaselineInstaller
+)
 $ErrorActionPreference = 'Stop'
 
 # Run on a disposable GitHub-hosted Windows runner, never against an active user's app.
@@ -14,8 +17,10 @@ if ((Test-Path -LiteralPath $dataPath) -or (Test-Path -LiteralPath $desktopShort
 }
 $testRoot = Join-Path $env:RUNNER_TEMP ('daynote-installer-' + [guid]::NewGuid().ToString('N'))
 $installPath = Join-Path $testRoot 'Program Files\DayNote'
+$expectedVersion = (Get-Content -LiteralPath './package.json' -Raw | ConvertFrom-Json).version
 New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
-$setup = Start-Process -FilePath (Resolve-Path -LiteralPath $Installer).Path -ArgumentList @('/S', "/D=$installPath") -WindowStyle Hidden -Wait -PassThru
+$firstInstaller = if ($BaselineInstaller) { $BaselineInstaller } else { $Installer }
+$setup = Start-Process -FilePath (Resolve-Path -LiteralPath $firstInstaller).Path -ArgumentList @('/S', "/D=$installPath") -WindowStyle Hidden -Wait -PassThru
 if ($setup.ExitCode -ne 0) { throw "Installer failed: $($setup.ExitCode)" }
 foreach ($file in @('DayNote.exe', 'daynote-cli.exe', 'LICENSE.txt', 'THIRD-PARTY-NOTICES.txt', 'uninstall.exe')) {
     if (!(Test-Path -LiteralPath (Join-Path $installPath $file))) { throw "Missing installed file: $file" }
@@ -30,6 +35,19 @@ if ($LASTEXITCODE -ne 0) { throw 'Installed CLI failed to add a task.' }
 $listed = & $cli list | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or @($listed.tasks).Count -ne 1) { throw 'Installed CLI could not read its task.' }
 if (!(Test-Path -LiteralPath (Join-Path $dataPath 'daynote.db'))) { throw 'CLI did not use the user data directory.' }
+
+if ($BaselineInstaller) {
+    # Match the updater's NSIS /UPDATE mode. The registry must preserve the custom
+    # installation path, including spaces, and the existing synthetic task.
+    $upgraded = Start-Process -FilePath (Resolve-Path -LiteralPath $Installer).Path -ArgumentList @('/S', '/UPDATE') -WindowStyle Hidden -Wait -PassThru
+    if ($upgraded.ExitCode -ne 0) { throw "Upgrade failed: $($upgraded.ExitCode)" }
+    $upgradedTasks = & $cli list | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or @($upgradedTasks.tasks).Count -ne 1 -or $upgradedTasks.tasks[0].title -ne 'Installer verification task') {
+        throw 'Upgrade did not preserve the existing task or install path.'
+    }
+    $upgradedShortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($desktopShortcut)
+    if ($upgradedShortcut.TargetPath -ne (Join-Path $installPath 'DayNote.exe')) { throw 'Upgrade broke the desktop shortcut.' }
+}
 
 $inputPath = Join-Path $testRoot 'mcp-input.jsonl'
 $outputPath = Join-Path $testRoot 'mcp-output.jsonl'
@@ -49,7 +67,7 @@ try {
         if ($app.HasExited) { throw "Installed desktop app exited: $($app.ExitCode)" }
         try {
             $health = Invoke-RestMethod 'http://127.0.0.1:47821/v1/health' -TimeoutSec 1
-            if ($health.ok -and $health.version -eq '0.1.0') { $healthy = $true; break }
+            if ($health.ok -and $health.version -eq $expectedVersion) { $healthy = $true; break }
         } catch { }
         Start-Sleep -Milliseconds 500
     }
@@ -73,3 +91,4 @@ if (!(Test-Path -LiteralPath (Join-Path $dataPath 'daynote.db'))) { throw 'Unins
 $retained = & './target/release/daynote-cli.exe' list | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or @($retained.tasks).Count -ne 1) { throw 'Uninstall did not preserve readable task data.' }
 Write-Output 'PASS: installer files, desktop target/icon, installed CLI/MCP, desktop startup/HTTP, uninstall, retained task database.'
+if ($BaselineInstaller) { Write-Output 'PASS: in-place /UPDATE from baseline retained install path, desktop shortcut and task data.' }

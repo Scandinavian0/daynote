@@ -1,13 +1,13 @@
 {
   "name": "daynote",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "test": "node --test ui/src/lib/quickparse.test.ts ui/src/components/Settings.test.mjs ui/src/lib/store-note.test.mjs",
+    "test": "node --test ui/src/lib/quickparse.test.ts ui/src/components/*.test.mjs ui/src/lib/*.test.mjs",
     "tauri": "tauri",
     "release:build": "node scripts/build-release.mjs"
   },

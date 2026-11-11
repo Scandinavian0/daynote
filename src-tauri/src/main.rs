@@ -12,6 +12,7 @@ mod scheduler;
 mod state;
 mod sys;
 mod tray;
+mod updates;
 mod win;
 
 use daynote_core::Store;
@@ -27,6 +28,8 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             win::show_main(app)
         }))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updates::UpdateState::default())
         .plugin(
             tauri_plugin_autostart::Builder::new()
                 .app_name("DayNote")
@@ -45,6 +48,9 @@ fn main() {
         )
         .invoke_handler(tauri::generate_handler![
             commands::api,
+            updates::check_update,
+            updates::download_update,
+            updates::install_update,
             commands::app_state,
             commands::set_expanded,
             commands::set_pinned,

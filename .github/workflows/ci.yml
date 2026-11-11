@@ -23,12 +23,55 @@ jobs:
       - run: npm run build
       - run: cargo test --workspace --locked
       - name: Build Windows installer
-        run: npm run release:build
-      - name: Verify installation, desktop shortcut and uninstall
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: |
+          if ($env:TAURI_SIGNING_PRIVATE_KEY) { npm run release:build }
+          elseif ($env:GITHUB_REF -like 'refs/tags/v*') { throw 'Release signing key is required.' }
+          else { npm run release:build -- --unsigned }
+          if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
+      - name: Verify production update signature
+        run: |
+          if (Test-Path -LiteralPath './dist/latest.json') {
+            cargo test -p daynote-app updates::tests::signed_release_artifact_is_accepted_by_the_production_key --locked -- --ignored
+            if ($LASTEXITCODE -ne 0) { throw 'Updater signature verification failed.' }
+          }
+      - name: Download upgrade baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.1.0 --repo Scandinavian0/daynote --pattern 'DayNote-0.1.0-windows-x64-setup.exe' --dir "$env:RUNNER_TEMP/daynote-baseline"
+          if ($LASTEXITCODE -ne 0) { throw 'Baseline download failed.' }
+          $hash = (Get-FileHash "$env:RUNNER_TEMP/daynote-baseline/DayNote-0.1.0-windows-x64-setup.exe" -Algorithm SHA256).Hash
+          if ($hash -ne '69D0F0DADC880B5E28443FEF7EF16B7262F6E91B90ADDEC079E54CA94295B4EF') { throw 'Unexpected baseline installer checksum.' }
+      - name: Verify upgrade, desktop shortcut and uninstall
         shell: pwsh
-        run: ./scripts/verify-installer.ps1 -Installer ./dist/DayNote-0.1.0-windows-x64-setup.exe
+        run: |
+          $version = (Get-Content -LiteralPath './package.json' -Raw | ConvertFrom-Json).version
+          ./scripts/verify-installer.ps1 -Installer "./dist/DayNote-$version-windows-x64-setup.exe" -BaselineInstaller "$env:RUNNER_TEMP/daynote-baseline/DayNote-0.1.0-windows-x64-setup.exe"
       - uses: actions/upload-artifact@v4
         with:
           name: daynote-windows-x64
           path: dist/*
           if-no-files-found: error
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    needs: test
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: daynote-windows-x64
+          path: dist
+      - name: Publish verified installer and update feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $manifest = Get-Content -LiteralPath './dist/latest.json' -Raw | ConvertFrom-Json
+          if ($env:GITHUB_REF_NAME -ne "v$($manifest.version)") { throw 'Tag and update manifest version differ.' }
+          gh release create $env:GITHUB_REF_NAME ./dist/*.exe ./dist/*.sig ./dist/SHA256SUMS.txt ./dist/latest.json --verify-tag --title "DayNote $($manifest.version) — Windows x64" --notes-file "docs/releases/$env:GITHUB_REF_NAME.md" --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }

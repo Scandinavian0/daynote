@@ -12,7 +12,7 @@ npm run build
 cargo test --workspace --locked
 ```
 
-修改安装逻辑时还应运行 `npm run release:build`，在隔离的 Windows 用户或虚拟机中验证安装、桌面快捷方式、CLI/MCP 和卸载保留数据。
+修改安装逻辑时还应运行 `npm run release:build -- --unsigned`，在隔离的 Windows 用户或虚拟机中验证安装、桌面快捷方式、CLI/MCP 和卸载保留数据。正式更新包需要维护者签名，见 [更新与发布说明](docs/UPDATES.md)。
 
 - 在真实业务边界添加回归测试，先观察失败再修复。
 - 保持 GUI、CLI、MCP 与 HTTP 共用 `daynote-core` 的业务规则。

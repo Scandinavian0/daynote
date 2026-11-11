@@ -73,6 +73,7 @@ test("a rejected HTTP enable restores the native checkbox to the saved disabled 
           } catch (error) { document.body.dataset.result = "FAIL: " + error.message; }
         `;
         if (id.replaceAll("\\", "/").endsWith("/src/lib/backend.ts")) return `
+          export const inTauri = false;
           export async function call() { return { series: [] }; }
           export async function cmd(name, args) {
             if (name === "set_pref") { window.requestedEnable = args.value; throw new Error("fixture: port occupied"); }

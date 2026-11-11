@@ -2,6 +2,7 @@
   // Preferences, recurring tasks, and the connection details an AI agent needs.
   import { onMount } from "svelte";
   import { store } from "../lib/store.svelte.ts";
+  import { updater } from "../lib/updater.svelte.ts";
   import { ruleText } from "../lib/dates.ts";
   import Icon from "./Icon.svelte";
   import { cmd, errorText } from "../lib/backend.ts";
@@ -289,6 +290,18 @@
     <button class="btn" disabled={directorySaving || app.data_dir_overridden || !(directoryDirty ? directory : app.next_data_dir || app.data_dir).trim()} onclick={saveDirectory}>{directorySaving ? "保存中…" : "保存数据目录"}</button>
     {#if app.next_data_dir && app.next_data_dir !== app.data_dir}<p class="help" role="status">已选择新目录，重启 DayNote 和 MCP 客户端后生效。</p>{/if}
     {#if directoryMessage}<p class="help" class:failed={directoryFailed} role={directoryFailed ? "alert" : "status"}>{directoryMessage}</p>{/if}
+  </section>
+
+  <section>
+    <h3>应用更新</h3>
+    <div class="line">
+      <span>当前版本 {app.version || "读取中…"}</span>
+      <button class="btn" disabled={updater.busy} onclick={() => updater.check(true)}>{updater.phase === "checking" ? "检查中…" : updater.phase === "error" ? "重新检查" : "检查更新"}</button>
+    </div>
+    {#if updater.phase === "latest"}<p class="help" role="status">已是最新版本</p>{/if}
+    {#if updater.phase === "available" && updater.update}<p class="help" role="status">新版本 {updater.update.version} 可用</p>{/if}
+    {#if updater.phase === "unsupported"}<p class="help" role="status">自动更新仅支持 DayNote 桌面应用，请在桌面应用中检查更新。</p>{/if}
+    {#if updater.phase === "error"}<p class="help failed" role="alert">{updater.error}</p>{/if}
   </section>
 
   <footer>

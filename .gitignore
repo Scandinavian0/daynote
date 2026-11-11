@@ -15,3 +15,5 @@
 *.db-wal
 *.db-shm
 api-token.txt
+*.key
+*.pem

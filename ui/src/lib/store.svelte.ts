@@ -239,6 +239,14 @@ class Store {
     return save;
   }
 
+  /** Drain dated drafts before an update may close the app. Failed writes keep their draft. */
+  async prepareForUpdate(): Promise<boolean> {
+    clearTimeout(this.#noteTimer);
+    const dates = new Set([...this.#noteDrafts.keys(), ...this.#noteSaves.keys()]);
+    await Promise.all([...dates].map((date) => this.flushNote(date)));
+    return this.#noteDrafts.size === 0 && this.#noteSaves.size === 0;
+  }
+
   // Recurring tasks ---------------------------------------------------------
 
   async addSeries(args: Record<string, unknown>) {
