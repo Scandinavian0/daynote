@@ -95,7 +95,7 @@ test("a rejected HTTP enable restores the native checkbox to the saved disabled 
   try {
     await vite.listen();
     const address = vite.httpServer.address();
-    const { stdout } = await promisify(execFile)(chrome, ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-background-networking", `--user-data-dir=${join(temporary, "profile")}`, "--dump-dom", "--virtual-time-budget=3000", `http://127.0.0.1:${address.port}/__settings-test`], { windowsHide: true, timeout: 20000, maxBuffer: 1024 * 1024 });
+    const { stdout } = await promisify(execFile)(chrome, ["--headless=new", "--no-first-run", "--no-default-browser-check", "--no-sandbox", "--disable-gpu", "--disable-background-networking", `--user-data-dir=${join(temporary, "profile")}`, "--dump-dom", "--virtual-time-budget=3000", `http://127.0.0.1:${address.port}/__settings-test`], { windowsHide: true, timeout: 45000, maxBuffer: 1024 * 1024 });
     assert.equal(stdout.match(/data-result="([^"]*)"/)?.[1], "PASS", "browser must restore the rejected toggle and show its error");
   } finally {
     await vite.close();

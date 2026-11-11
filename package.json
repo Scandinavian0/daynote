@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "test": "node --test ui/src/lib/quickparse.test.ts ui/src/components/*.test.mjs ui/src/lib/*.test.mjs",
+    "test": "node --test --test-concurrency=1 ui/src/lib/quickparse.test.ts ui/src/components/*.test.mjs ui/src/lib/*.test.mjs",
     "tauri": "tauri",
     "release:build": "node scripts/build-release.mjs"
   },

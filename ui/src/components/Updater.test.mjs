@@ -78,9 +78,22 @@ test("main-window update actions show progress/errors, preserve drafts, and bloc
             assert(document.querySelector('[role="dialog"] [role="alert"]')?.textContent.includes("便签尚未全部保存"), "note-save error missing");
             assert(store.note === "preserve me before restart", "failed save lost draft");
             window.failSave = false;
+            window.failInstall = true;
             action("重试下载并安装").click();
             await settle();
             assert(window.notes.get(store.date) === "preserve me before restart", "retry did not save draft");
+            assert(document.querySelector('[role="dialog"] [role="alert"]')?.textContent.includes("installer launch denied"), "installer launch error missing");
+            assert(!action("稍后").disabled && !action("重试下载并安装").disabled, "installer failure left actions blocked");
+            action("稍后").click();
+            await tick();
+            assert(!document.querySelector('main').inert, "installer failure left application unusable");
+            window.failInstall = false;
+            action("重新检查").click();
+            await settle();
+            action("下载并安装").click();
+            await tick();
+            window.finishDownload();
+            await settle();
             assert(updater.phase === "installing", "install stage missing");
             assert(document.querySelector('main').inert, "main window is editable during install");
             assert(document.body.textContent.includes("关闭并重新启动"), "restart warning missing");
@@ -109,7 +122,10 @@ test("main-window update actions show progress/errors, preserve drafts, and bloc
               args.progress.onmessage({ downloaded: 25, total: 100 });
               await new Promise(resolve => { window.finishDownload = resolve; });
             }
-            if (name === "install_update") await new Promise(() => {});
+            if (name === "install_update") {
+              if (window.failInstall) throw new Error("installer launch denied");
+              await new Promise(() => {});
+            }
           }
           export const on = async () => () => {};
           export const errorText = e => String(e.message ?? e);
@@ -127,7 +143,7 @@ test("main-window update actions show progress/errors, preserve drafts, and bloc
   try {
     await vite.listen();
     const address = vite.httpServer.address();
-    const { stdout } = await promisify(execFile)(chrome, ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-background-networking", `--user-data-dir=${join(temporary, "profile")}`, "--dump-dom", "--virtual-time-budget=5000", `http://127.0.0.1:${address.port}/__update-test`], { windowsHide: true, timeout: 25000, maxBuffer: 1024 * 1024 });
+    const { stdout } = await promisify(execFile)(chrome, ["--headless=new", "--no-first-run", "--no-default-browser-check", "--no-sandbox", "--disable-gpu", "--disable-background-networking", `--user-data-dir=${join(temporary, "profile")}`, "--dump-dom", "--virtual-time-budget=5000", `http://127.0.0.1:${address.port}/__update-test`], { windowsHide: true, timeout: 45000, maxBuffer: 1024 * 1024 });
     assert.equal(stdout.match(/data-result="([^"]*)"/)?.[1], "PASS", "browser update workflow must expose safe, actionable states");
   } finally {
     await vite.close();

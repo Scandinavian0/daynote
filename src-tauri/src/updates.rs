@@ -93,6 +93,12 @@ pub async fn check_update<R: Runtime>(
     // The feed comes only from the embedded configuration, never from renderer input.
     let updater = app
         .updater_builder()
+        // The plugin calls this BEFORE ShellExecuteW, which can still fail. Its
+        // default cleanup hides every window and destroys the tray, making the
+        // returned error impossible to act on. Keep the live app intact here.
+        // On successful launch the plugin exits the process; Windows releases
+        // its windows/handles. The frontend has already flushed all note drafts.
+        .on_before_exit(|| {})
         .timeout(Duration::from_secs(20))
         .version_comparator(|current, release| {
             release.version.pre.is_empty() && release.version > current
