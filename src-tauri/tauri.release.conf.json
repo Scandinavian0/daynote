@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "externalBin": ["binaries/daynote-cli"],
+    "resources": {
+      "../LICENSE": "LICENSE.txt",
+      "binaries/THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt"
+    }
+  }
+}

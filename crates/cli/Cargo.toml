@@ -1,0 +1,14 @@
+[package]
+name = "daynote-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "daynote-cli"
+path = "src/main.rs"
+
+[dependencies]
+daynote-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true

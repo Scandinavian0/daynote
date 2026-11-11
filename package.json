@@ -1,0 +1,26 @@
+{
+  "name": "daynote",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "node --test ui/src/lib/quickparse.test.ts ui/src/components/Settings.test.mjs ui/src/lib/store-note.test.mjs",
+    "tauri": "tauri",
+    "release:build": "node scripts/build-release.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "~2.11.1"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "@tauri-apps/cli": "~2.11.5",
+    "@types/node": "^26.6.6",
+    "svelte": "^5.57.3",
+    "svelte-check": "4.7.8",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.8"
+  }
+}

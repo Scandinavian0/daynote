@@ -1,0 +1,17 @@
+/target/
+/node_modules/
+/ui/dist/
+/src-tauri/gen/
+/app/
+/data/
+/dev-data/
+*.log
+/dist/
+/src-tauri/binaries/
+/.playwright/
+.env
+.env.*
+*.db
+*.db-wal
+*.db-shm
+api-token.txt
