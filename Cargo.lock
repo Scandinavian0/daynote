@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "daynote-app"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "daynote-core",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "daynote-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "daynote-core",
  "serde",
@@ -703,7 +703,7 @@ dependencies = [
 
 [[package]]
 name = "daynote-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "rusqlite",
