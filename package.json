@@ -1,7 +1,7 @@
 {
   "name": "daynote",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,6 +15,7 @@
     "@tauri-apps/api": "~2.11.1"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@tauri-apps/cli": "~2.11.5",
     "@types/node": "^26.6.6",

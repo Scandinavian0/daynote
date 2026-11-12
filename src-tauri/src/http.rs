@@ -490,10 +490,12 @@ impl Server {
                             biased;
                             _ = &mut stopped => break,
                             _ = connections.join_next(), if !connections.is_empty() => {},
-                            accepted = listener.accept() => {
+                            // Apply backpressure before accepting: SDK handshakes
+                            // may open a GET probe and a POST concurrently. Keep
+                            // excess sockets in the bounded OS listen backlog
+                            // until a slot frees instead of accepting then resetting.
+                            accepted = listener.accept(), if connections.len() < 32 => {
                                 let Ok((socket, _)) = accepted else { break };
-                                // Bound memory, file descriptors and the number of slow clients.
-                                if connections.len() >= 32 { continue; }
                                 let token = shared_token.clone();
                                 let version = version.clone();
                                 let backend = backend.clone();
@@ -1047,6 +1049,49 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         stream
+    }
+
+    #[test]
+    fn connection_burst_waits_for_capacity_instead_of_resetting_clients() {
+        let server = socket_server();
+        let port = server.port;
+        let mut occupied = Vec::new();
+        // A 100 Continue response proves each of the 32 bounded connection
+        // slots is serving a request and waiting for its body, without sleeps.
+        for _ in 0..32 {
+            let mut stream = connect(port);
+            write!(stream, "POST /v1/call/list_tasks HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer test-token\r\nContent-Length: 2\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n").unwrap();
+            let mut interim = [0u8; 25];
+            stream.read_exact(&mut interim).unwrap();
+            assert_eq!(&interim, b"HTTP/1.1 100 Continue\r\n\r\n");
+            occupied.push(stream);
+        }
+        let mut queued = connect(port);
+        write!(queued, "GET /v1/health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").unwrap();
+        queued.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        let mut byte = [0u8; 1];
+        let waiting = queued.read(&mut byte);
+        assert!(
+            waiting.as_ref().is_err_and(|error| matches!(error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)),
+            "a burst must wait for a slot without being reset or exceeding the active limit: {waiting:?}"
+        );
+        // Release one active request; the queued client must then receive a
+        // normal response on its original socket, without retrying/reconnecting.
+        let mut completed = occupied.pop().unwrap();
+        completed.write_all(b"{}").unwrap();
+        let mut reply = String::new();
+        completed.read_to_string(&mut reply).unwrap();
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        queued.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        reply.clear();
+        queued.read_to_string(&mut reply).unwrap();
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        // Saturated clients must not prevent the application stopping/rebinding.
+        let now = std::time::Instant::now();
+        server.stop();
+        assert!(now.elapsed() < Duration::from_secs(1));
+        assert!(TcpListener::bind(("127.0.0.1", port)).is_ok());
     }
 
     #[test]
