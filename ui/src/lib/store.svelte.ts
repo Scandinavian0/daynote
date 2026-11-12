@@ -29,6 +29,7 @@ const defaultApp: AppState = {
   token_path: "",
   data_dir: "",
   next_data_dir: "",
+  data_dir_error: null,
   data_dir_overridden: false,
   cli_path: "",
   version: "",

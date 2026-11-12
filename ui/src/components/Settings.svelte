@@ -116,7 +116,9 @@
       const message = await cmd<string>("set_data_directory", { path: directory.trim() });
       await store.loadApp();
       directoryDirty = false;
-      directoryMessage = `目录已保存，重启 DayNote 和 MCP 客户端后生效：${message}`;
+      directoryMessage = app.next_data_dir === app.data_dir
+        ? "已取消待生效的新目录，继续使用当前目录"
+        : `目录已保存，重启 DayNote 后生效：${message}`;
     } catch (e) {
       directoryMessage = errorText(e);
       directoryFailed = true;
@@ -285,10 +287,11 @@
     </div>
     <label for="data-directory">下次启动的数据目录</label>
     <input id="data-directory" class="field" aria-label="数据目录" value={directoryDirty ? directory : app.next_data_dir || app.data_dir} disabled={directorySaving || app.data_dir_overridden} oninput={(e) => { directory = e.currentTarget.value; directoryDirty = true; directoryMessage = ""; }} />
-    <p class="help">仅切换目录，不自动搬迁；原数据保留。先备份并复制数据，保存后重启 DayNote 和 MCP 客户端。</p>
+    <p class="help">仅切换目录，不自动搬迁；原数据保留。先备份并复制数据，保存后重启 DayNote；已在运行的 MCP 服务会在下一次调用时跟上。选择目录不会升级其中的数据库。</p>
     {#if app.data_dir_overridden}<p class="help">当前由 DAYNOTE_DATA_DIR 环境变量指定目录，请修改环境变量后重启。</p>{/if}
     <button class="btn" disabled={directorySaving || app.data_dir_overridden || !(directoryDirty ? directory : app.next_data_dir || app.data_dir).trim()} onclick={saveDirectory}>{directorySaving ? "保存中…" : "保存数据目录"}</button>
-    {#if app.next_data_dir && app.next_data_dir !== app.data_dir}<p class="help" role="status">已选择新目录，重启 DayNote 和 MCP 客户端后生效。</p>{/if}
+    {#if app.next_data_dir && app.next_data_dir !== app.data_dir}<p class="help" role="status">已选择新目录，重启 DayNote 后生效；在此之前应用和 AI 接口都继续使用当前目录。</p>{/if}
+    {#if app.data_dir_error}<p class="help failed" role="alert">{app.data_dir_error}。DayNote 仍在使用原目录 {app.data_dir}。</p>{/if}
     {#if directoryMessage}<p class="help" class:failed={directoryFailed} role={directoryFailed ? "alert" : "status"}>{directoryMessage}</p>{/if}
   </section>
 

@@ -4,6 +4,7 @@ use daynote_core::api::{self, ApiError, Ctx};
 use daynote_core::{now_local, Store};
 use serde_json::{json, Value};
 use std::io::BufRead;
+use std::path::PathBuf;
 
 /// Handshake-based revisions whose `initialize` / `tools/*` shapes we implement.
 /// (2026-07-28 dropped `initialize` for per-request `_meta`, so it is not listed.)
@@ -20,7 +21,8 @@ const INVALID_PARAMS: i64 = -32602;
 struct Server {
     source_override: Option<String>,
     source: String,
-    store: Option<Store>,
+    /// The open database and the directory it was opened from.
+    store: Option<(PathBuf, Store)>,
 }
 
 pub fn serve(source_override: Option<String>) -> i32 {
@@ -179,14 +181,20 @@ impl Server {
         )
     }
 
-    /// Open the database on first use and keep it open for the process lifetime.
+    /// The database of the directory in effect, resolved again on every call: once the
+    /// desktop app restarts onto a newly chosen directory, a long-running server
+    /// follows on its next call instead of writing to the old one.
     fn store(&mut self) -> Result<&mut Store, ApiError> {
-        if self.store.is_none() {
-            let s = Store::open_default()
+        let dir = daynote_core::data_dir()
+            .map_err(|e| ApiError::internal(format!("读取数据目录失败：{e}")))?;
+        if self.store.as_ref().is_none_or(|(open, _)| *open != dir) {
+            self.store = None; // close the old database before opening the new one
+            let s = Store::open(&dir.join("daynote.db"))
                 .map_err(|e| ApiError::internal(format!("打开数据库失败：{e}")))?;
-            self.store = Some(s);
+            eprintln!("daynote mcp: data dir {}", dir.display());
+            self.store = Some((dir, s));
         }
-        Ok(self.store.as_mut().expect("store just opened"))
+        Ok(&mut self.store.as_mut().expect("store just opened").1)
     }
 }
 

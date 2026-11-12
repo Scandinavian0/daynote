@@ -1,5 +1,6 @@
 //! The few Win32 calls Tauri does not wrap: showing a window without activating it,
-//! the Windows build number, and the system notification sound.
+//! the Windows build number, the system notification sound, the autostart Run value
+//! and the startup-failure message box.
 use std::ffi::c_void;
 
 type Hwnd = *mut c_void;
@@ -23,6 +24,7 @@ mod ffi {
         pub fn SetWindowPos(hwnd: Hwnd, after: Hwnd, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
         pub fn ShowWindow(hwnd: Hwnd, cmd: i32) -> i32;
         pub fn MessageBeep(kind: u32) -> i32;
+        pub fn MessageBoxW(hwnd: Hwnd, text: *const u16, caption: *const u16, kind: u32) -> i32;
     }
 
     #[link(name = "winmm")]
@@ -98,11 +100,8 @@ pub fn set_run_entry(name: &str, command: &str) -> bool {
             size: u32,
         ) -> i32;
     }
-    // HKEY_CURRENT_USER is the sign-extended constant 0x80000001.
-    const HKEY_CURRENT_USER: isize = 0x8000_0001u32 as i32 as isize;
     const REG_SZ: u32 = 1;
-    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
-    let subkey = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+    let subkey = wide(RUN_KEY);
     let value = wide(name);
     let data = wide(command);
     // SAFETY: all three buffers are NUL-terminated UTF-16 that outlive the call, and the
@@ -122,6 +121,118 @@ pub fn set_run_entry(name: &str, command: &str) -> bool {
 #[cfg(not(windows))]
 pub fn set_run_entry(_name: &str, _command: &str) -> bool {
     false
+}
+
+/// HKEY_CURRENT_USER is the sign-extended constant 0x80000001.
+#[cfg(windows)]
+const HKEY_CURRENT_USER: isize = 0x8000_0001u32 as i32 as isize;
+#[cfg(windows)]
+const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+
+/// NUL-terminated UTF-16 for a Win32 call.
+#[cfg(windows)]
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Read `HKCU\...\Run\<name>` as written (environment variables not expanded), or
+/// `None` when the value is missing or not a string.
+#[cfg(windows)]
+pub fn run_entry(name: &str) -> Option<String> {
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn RegGetValueW(
+            key: isize,
+            subkey: *const u16,
+            value: *const u16,
+            flags: u32,
+            kind: *mut u32,
+            data: *mut c_void,
+            size: *mut u32,
+        ) -> i32;
+    }
+    const RRF_RT_REG_SZ: u32 = 0x0000_0002;
+    const RRF_RT_REG_EXPAND_SZ: u32 = 0x0000_0004;
+    const RRF_NOEXPAND: u32 = 0x1000_0000;
+    const ERROR_MORE_DATA: i32 = 234;
+    let flags = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND;
+    let subkey = wide(RUN_KEY);
+    let value = wide(name);
+    // The value can grow between the size query and the read; retry a few times.
+    for _ in 0..4 {
+        let mut size: u32 = 0;
+        // SAFETY: NUL-terminated buffers that outlive the call; null data asks for the size.
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                subkey.as_ptr(),
+                value.as_ptr(),
+                flags,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut size,
+            )
+        };
+        if status != 0 {
+            return None;
+        }
+        let mut buf = vec![0u16; (size as usize).div_ceil(2).max(1)];
+        let mut got = (buf.len() * 2) as u32;
+        // SAFETY: `buf` holds `got` bytes and outlives the call.
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                subkey.as_ptr(),
+                value.as_ptr(),
+                flags,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut got,
+            )
+        };
+        if status == ERROR_MORE_DATA {
+            continue;
+        }
+        if status != 0 {
+            return None;
+        }
+        buf.truncate(got as usize / 2);
+        while buf.last() == Some(&0) {
+            buf.pop();
+        }
+        return Some(String::from_utf16_lossy(&buf));
+    }
+    None
+}
+
+#[cfg(not(windows))]
+pub fn run_entry(_name: &str) -> Option<String> {
+    None
+}
+
+/// A modal error message box with no owner window; returns when the user closes it.
+/// Used when DayNote cannot start, where there is no window to show anything in.
+#[cfg(windows)]
+pub fn error_box(title: &str, text: &str) {
+    const MB_ICONERROR: u32 = 0x0000_0010;
+    const MB_TOPMOST: u32 = 0x0004_0000;
+    const MB_SETFOREGROUND: u32 = 0x0001_0000;
+    let title = wide(title);
+    let text = wide(text);
+    // SAFETY: both buffers are NUL-terminated UTF-16 that outlive the call.
+    unsafe {
+        ffi::MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+pub fn error_box(title: &str, text: &str) {
+    eprintln!("{title}: {text}");
 }
 
 /// Acrylic blur with our own tint, through the accent-policy call that the taskbar and
@@ -269,3 +380,20 @@ pub fn windows_build() -> u32 {
 }
 #[cfg(not(windows))]
 pub fn play_notification() {}
+
+#[cfg(all(test, windows))]
+mod tests {
+    /// Reading never writes; a value name nothing uses must come back as `None`.
+    #[test]
+    fn a_missing_run_value_reads_as_none() {
+        assert_eq!(super::run_entry("DayNote-value-that-nothing-ever-writes"), None);
+    }
+
+    /// Prints this machine's real autostart entry, to check the registry read by hand:
+    /// `cargo test -p daynote-app sys::tests -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "depends on this machine's registry"]
+    fn prints_the_real_autostart_entry() {
+        println!("autostart entry: {:?}", super::run_entry("DayNote"));
+    }
+}

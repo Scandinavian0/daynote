@@ -90,7 +90,7 @@ daynote-cli tools
 
 ## 接入方式
 
-下面的路径是占位示例，请替换为设置页显示的 CLI 路径。如果使用自定义数据目录，为 GUI 和 MCP 客户端设置同一个 `DAYNOTE_DATA_DIR`。
+下面的路径是占位示例，请替换为设置页显示的 CLI 路径。在设置页更改数据目录时，MCP 与 CLI 读取同一份配置：重启 DayNote 之前继续使用原目录，重启后已在运行的 MCP 服务会在下一次调用时自动换到新目录，不需要重启 MCP 客户端。若改用环境变量 `DAYNOTE_DATA_DIR`，需为 GUI 和 MCP 客户端设置同一个值，修改后两者都要重启。
 
 Claude Code：
 

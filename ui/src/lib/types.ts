@@ -67,8 +67,12 @@ export interface AppState {
   http_active_port: number;
   http_error: string | null;
   token_path: string;
+  /** The directory this app, its HTTP API, the CLI and MCP all use now. */
   data_dir: string;
+  /** The directory chosen for the next start, else `data_dir`. */
   next_data_dir: string;
+  /** Why the chosen directory could not take effect at the last start. */
+  data_dir_error: string | null;
   data_dir_overridden: boolean;
   cli_path: string;
   version: string;

@@ -32,6 +32,8 @@ pub struct Shell {
     pub tray_tip: Mutex<String>,
     pub token: Mutex<Option<String>>,
     pub data_dir: PathBuf,
+    /// Why the directory chosen in the settings page could not take effect at startup.
+    pub data_dir_error: Option<String>,
     kick_tx: Sender<()>,
     save_tx: Sender<()>,
 }
@@ -63,6 +65,7 @@ impl Shell {
             tray_tip: Mutex::new(String::new()),
             token: Mutex::new(token),
             data_dir,
+            data_dir_error: None,
             kick_tx,
             save_tx,
         }

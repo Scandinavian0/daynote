@@ -58,7 +58,9 @@ pub struct AppState {
     http_error: Option<String>,
     token_path: String,
     data_dir: String,
+    /// The directory chosen for the next start, else the one in use.
     next_data_dir: String,
+    data_dir_error: Option<String>,
     data_dir_overridden: bool,
     cli_path: String,
     version: String,
@@ -98,9 +100,11 @@ pub async fn app_state(app: AppHandle) -> AppState {
         http_error,
         token_path: http::token_path(&sh.data_dir).display().to_string(),
         data_dir: sh.data_dir.display().to_string(),
-        next_data_dir: daynote_core::data_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default(),
+        next_data_dir: daynote_core::paths::pending_data_directory()
+            .unwrap_or_else(|| sh.data_dir.clone())
+            .display()
+            .to_string(),
+        data_dir_error: sh.data_dir_error.clone(),
         data_dir_overridden: std::env::var_os("DAYNOTE_DATA_DIR").is_some_and(|v| !v.is_empty()),
         cli_path: cli,
         version: app.package_info().version.to_string(),

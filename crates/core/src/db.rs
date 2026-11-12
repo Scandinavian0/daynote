@@ -92,6 +92,21 @@ FROM tasks parent JOIN tasks child ON child.parent_id = parent.id
 WHERE parent.deleted_at IS NOT NULL AND child.deleted_at = parent.deleted_at;
 "#;
 
+/// Check, without writing or creating anything, that `path` is a SQLite database this
+/// program can open: readable, and no newer than [`SCHEMA_VERSION`]. Unlike
+/// [`Store::open`] it never migrates, so an older program can still use the file.
+pub(crate) fn inspect(path: &Path) -> Result<()> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.busy_timeout(std::time::Duration::from_millis(5000))?;
+    // Reading the schema forces SQLite to parse the file header.
+    let _tables: i64 = conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))?;
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version > SCHEMA_VERSION {
+        return Err(Error::SchemaTooNew(version, SCHEMA_VERSION));
+    }
+    Ok(())
+}
+
 impl Store {
     /// Open (creating if needed) the database at `path`: WAL, busy_timeout=5000, migrations.
     pub fn open(path: &Path) -> Result<Store> {

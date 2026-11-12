@@ -42,6 +42,34 @@ test("AI settings render an editable configured HTTP port and a save action", as
   }
 });
 
+test("data directory section tells a pending choice and a failed switch apart from the directory in use", async () => {
+  const cacheDir = await mkdtemp(join(tmpdir(), "daynote-settings-dir-test-"));
+  const vite = await createServer({ cacheDir, server: { middlewareMode: true, hmr: false }, appType: "custom" });
+  try {
+    const { default: Settings } = await vite.ssrLoadModule("/src/components/Settings.svelte");
+    const { render } = await vite.ssrLoadModule("svelte/server");
+    const { store } = await vite.ssrLoadModule("/src/lib/store.svelte.ts");
+    store.app.data_dir = "D:\\Example\\Current";
+    store.app.next_data_dir = "D:\\Example\\Current";
+    store.app.data_dir_error = null;
+    const settled = render(Settings).body;
+    assert.doesNotMatch(settled, /重启 DayNote 后生效/);
+    assert.doesNotMatch(settled, /仍在使用原目录/);
+
+    store.app.next_data_dir = "E:\\Example\\Chosen";
+    const pending = render(Settings).body;
+    assert.match(pending, /已选择新目录，重启 DayNote 后生效；在此之前应用和 AI 接口都继续使用当前目录/);
+    assert.match(pending, /E:\\Example\\Chosen/);
+
+    store.app.data_dir_error = "新数据目录 E:\\Example\\Chosen 未能启用：数据目录不可写入";
+    const failed = render(Settings).body;
+    assert.match(failed, /<p class="help failed[^"]*" role="alert">[^<]*数据目录不可写入[^<]*仍在使用原目录/);
+  } finally {
+    await vite.close();
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});
+
 const chrome = process.env.CHROME_BIN || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 test("a rejected HTTP enable restores the native checkbox to the saved disabled state", { skip: !existsSync(chrome) }, async () => {
   const temporary = await mkdtemp(join(tmpdir(), "daynote-checkbox-test-"));

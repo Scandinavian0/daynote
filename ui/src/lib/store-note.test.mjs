@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "vite";
 
+// A day to navigate to that is never the real "today" the store starts on. A date near
+// the time of writing would make these tests fail on that one calendar day.
+const OTHER_DATE = "2001-02-03";
+
 async function withStore(run) {
   const notes = new Map();
   const writes = [];
@@ -105,7 +109,7 @@ test("a failed note write survives refresh and navigation and can be retried", a
     await store.flushNote();
     await store.refresh();
     assert.equal(store.note, "unsaved draft");
-    store.go("2026-11-12");
+    store.go(OTHER_DATE);
     await store.refresh();
     store.go(date);
     await store.refresh();
@@ -148,7 +152,7 @@ test("preparing an update waits for an active write and saves drafts from every 
     failOnce();
     await store.flushNote();
     failOnce();
-    store.go("2026-11-12");
+    store.go(OTHER_DATE);
     await new Promise((resolve) => setImmediate(resolve));
     store.editNote("active draft");
     const release = holdNextWrite();
@@ -163,6 +167,6 @@ test("preparing an update waits for an active write and saves drafts from every 
     await active;
     assert.equal(await preparing, true);
     assert.equal(notes.get(firstDate), "older unsaved date");
-    assert.equal(notes.get("2026-11-12"), "newest draft");
+    assert.equal(notes.get(OTHER_DATE), "newest draft");
   });
 });

@@ -9,13 +9,13 @@ mod http;
 mod prefs;
 mod reminders;
 mod scheduler;
+mod startup;
 mod state;
 mod sys;
 mod tray;
 mod updates;
 mod win;
 
-use daynote_core::Store;
 use state::{shell, Shell};
 use std::sync::mpsc::channel;
 use tauri::{AppHandle, Manager, RunEvent};
@@ -66,12 +66,23 @@ fn main() {
             commands::reminder_resize,
             commands::quickadd_hide,
         ])
+        // Tauri runs this when the event loop starts and panics on an error, which a
+        // windows-subsystem build would swallow; so failures are shown here instead.
         .setup(move |app| {
-            setup(app.handle(), autostarted)?;
+            if let Err(e) = setup(app.handle(), autostarted) {
+                let text = match e {
+                    SetupError::Data(e) => startup::failure_message(&e),
+                    SetupError::Other(e) => startup::generic_failure_message(&e.to_string()),
+                };
+                fail(&text);
+            }
             Ok(())
         })
-        .build(tauri::generate_context!())
-        .expect("error while building DayNote");
+        .build(tauri::generate_context!());
+    let app = match app {
+        Ok(app) => app,
+        Err(e) => fail(&startup::generic_failure_message(&e.to_string())),
+    };
 
     app.run(|_app, event| {
         // Hidden windows are not "closed"; only an explicit quit (with an exit code) ends.
@@ -83,9 +94,30 @@ fn main() {
     });
 }
 
-fn setup(app: &AppHandle, autostarted: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let data_dir = daynote_core::data_dir()?;
-    let store = Store::open(&data_dir.join("daynote.db"))?;
+/// Tell the user why DayNote cannot start, then exit with a failure code.
+fn fail(text: &str) -> ! {
+    eprintln!("DayNote: {text}");
+    sys::error_box("DayNote 无法启动", text);
+    std::process::exit(1)
+}
+
+enum SetupError {
+    /// The data directory or its configuration (the message names what to fix).
+    Data(daynote_core::paths::LocationError),
+    Other(Box<dyn std::error::Error>),
+}
+
+fn setup(app: &AppHandle, autostarted: bool) -> Result<(), SetupError> {
+    let opened = startup::open_data().map_err(SetupError::Data)?;
+    setup_shell(app, autostarted, opened).map_err(SetupError::Other)
+}
+
+fn setup_shell(
+    app: &AppHandle,
+    autostarted: bool,
+    opened: startup::Opened,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let startup::Opened { dir: data_dir, store, pending_error } = opened;
     let token = match http::load_or_create_token(&data_dir) {
         Ok(t) => Some(t),
         Err(e) => {
@@ -95,33 +127,49 @@ fn setup(app: &AppHandle, autostarted: bool) -> Result<(), Box<dyn std::error::E
     };
     let (kick_tx, kick_rx) = channel();
     let (save_tx, save_rx) = channel();
-    app.manage(Shell::new(
+    let mut shell_state = Shell::new(
         store,
         prefs::Prefs::default(),
         token,
         data_dir,
         kick_tx,
         save_tx,
-    ));
+    );
+    shell_state.data_dir_error = pending_error;
+    app.manage(shell_state);
     let sh = shell(app);
     let settings = sh.call("get_settings", serde_json::json!({}), "app")?;
     if let Some(map) = settings.get("settings").and_then(|v| v.as_object()) {
         *state::lock(&sh.prefs) = prefs::Prefs::from_settings(map);
     }
 
-    // First run of a release build turns autostart on once; debug builds never do.
+    // Release builds only; debug builds never write the autostart entry. The entry
+    // belongs to whichever copy of DayNote it launches: another installed or portable
+    // copy's entry is neither taken over on first run nor rewritten here.
     #[cfg(not(debug_assertions))]
-    if !sh.prefs().autostart_initialized {
-        if let Err(e) = tray::set_autostart(app, true) {
-            eprintln!("DayNote: {e}");
+    {
+        let exe = std::env::current_exe().ok();
+        let entry = || sys::run_entry(tray::RUN_NAME);
+        if !sh.prefs().autostart_initialized {
+            let enable = exe
+                .as_deref()
+                .is_none_or(|exe| tray::first_run_enables(entry().as_deref(), exe));
+            if enable {
+                if let Err(e) = tray::set_autostart(app, true) {
+                    eprintln!("DayNote: {e}");
+                }
+            } else {
+                eprintln!("DayNote: autostart already launches another copy; left unchanged");
+            }
+            state::lock(&sh.prefs).autostart_initialized = true;
+            sh.save_setting("autostart_initialized", "1");
         }
-        state::lock(&sh.prefs).autostart_initialized = true;
-        sh.save_setting("autostart_initialized", "1");
-    }
-    // Keep an existing entry in the quoted form (also heals one written by an older build).
-    #[cfg(not(debug_assertions))]
-    if tray::autostart_enabled(app) {
-        tray::quote_run_entry();
+        // Keep our own entry in the quoted form (also heals one an older build wrote).
+        if let (Some(exe), Some(command)) = (exe.as_deref(), entry()) {
+            if tray::needs_rewrite(&command, exe) {
+                tray::quote_run_entry();
+            }
+        }
     }
 
     win::build_main(app, !autostarted)?;

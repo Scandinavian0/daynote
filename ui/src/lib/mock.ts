@@ -246,6 +246,7 @@ const app: AppState = {
   token_path: "C:\\Users\\Example\\AppData\\Local\\DayNoteData\\api-token.txt",
   data_dir: "C:\\Users\\Example\\AppData\\Local\\DayNoteData",
   next_data_dir: "C:\\Users\\Example\\AppData\\Local\\DayNoteData",
+  data_dir_error: null,
   data_dir_overridden: false,
   cli_path: "C:\\Users\\Example\\AppData\\Local\\DayNote\\daynote-cli.exe",
   version: "0.1.0",
@@ -282,6 +283,7 @@ export async function mockCmd(name: string, a: Record<string, any>): Promise<unk
     case "regenerate_api_token":
       break;
     case "set_data_directory":
+      // Saved for the next start; choosing the directory in use withdraws the choice.
       app.next_data_dir = a.path;
       emit("app-state-changed");
       return a.path;

@@ -1,6 +1,7 @@
 //! Tray icon: left click toggles the main window, right click opens the menu.
 use crate::state::{lock, shell};
 use crate::win;
+use std::path::Path;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, Wry};
@@ -13,11 +14,22 @@ pub struct TrayItems {
     pub autostart: CheckMenuItem<Wry>,
 }
 
+/// Registry value name of the autostart entry (the plugin's `app_name`).
+pub const RUN_NAME: &str = "DayNote";
+
+/// Autostart is on for this copy: the entry exists, Task Manager has not disabled it,
+/// and it launches this very program (not another installed or portable copy).
 pub fn autostart_enabled(app: &AppHandle) -> bool {
-    app.autolaunch().is_enabled().unwrap_or(false)
+    app.autolaunch().is_enabled().unwrap_or(false) && entry_is_ours()
 }
 
+/// Turning autostart on always points it at this program (an explicit user choice).
+/// Turning it off removes only an entry that launches this program.
 pub fn set_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    if !enabled && !entry_is_ours() {
+        sync_autostart(app);
+        return Ok(());
+    }
     let al = app.autolaunch();
     let r = if enabled { al.enable() } else { al.disable() };
     let out = r.map_err(|e| format!("设置开机自启失败：{e}"));
@@ -32,8 +44,7 @@ pub fn set_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
 /// unquoted, which is fragile for a path with spaces).
 pub fn quote_run_entry() {
     if let Ok(exe) = std::env::current_exe() {
-        let command = format!("\"{}\" --autostart", exe.display());
-        if !crate::sys::set_run_entry("DayNote", &command) {
+        if !crate::sys::set_run_entry(RUN_NAME, &canonical_entry(&exe)) {
             eprintln!("DayNote: could not rewrite the autostart entry");
         }
     }
@@ -122,8 +133,110 @@ pub fn set_tip(app: &AppHandle, open_today: usize) {
     });
 }
 
+/// A Windows path in comparable form: no `\\?\` prefix, backslashes, lower case.
+fn normalize(path: &str) -> String {
+    let path = path.trim();
+    let path = match path.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => path.strip_prefix(r"\\?\").unwrap_or(path).to_string(),
+    };
+    path.replace('/', "\\").to_lowercase()
+}
+
+/// Whether the autostart command line `command` launches the program at `exe`. Accepts
+/// the quoted form this app writes and the unquoted `<exe> --autostart` the plugin
+/// writes (whose path may contain spaces).
+pub fn entry_points_to(command: &str, exe: &Path) -> bool {
+    let exe = normalize(&exe.to_string_lossy());
+    let command = command.trim();
+    if exe.is_empty() || command.is_empty() {
+        return false;
+    }
+    if let Some(rest) = command.strip_prefix('"') {
+        return rest.split_once('"').is_some_and(|(path, _)| normalize(path) == exe);
+    }
+    normalize(command)
+        .strip_prefix(&exe)
+        .is_some_and(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
+}
+
+/// The command line this program keeps in its autostart entry.
+fn canonical_entry(exe: &Path) -> String {
+    format!("\"{}\" --autostart", exe.display())
+}
+
+/// Whether an existing entry is this program's but not in the canonical quoted form.
+/// An entry that launches another copy is never rewritten.
+#[cfg_attr(debug_assertions, allow(dead_code))] // used by release startup only
+pub fn needs_rewrite(command: &str, exe: &Path) -> bool {
+    entry_points_to(command, exe) && command != canonical_entry(exe)
+}
+
+/// First run of a release build: turn autostart on unless it belongs to another copy.
+#[cfg_attr(debug_assertions, allow(dead_code))] // used by release startup only
+pub fn first_run_enables(entry: Option<&str>, exe: &Path) -> bool {
+    match entry.map(str::trim) {
+        None | Some("") => true,
+        Some(command) => entry_points_to(command, exe),
+    }
+}
+
+/// Whether the autostart entry exists and launches this very program.
+fn entry_is_ours() -> bool {
+    match (std::env::current_exe(), crate::sys::run_entry(RUN_NAME)) {
+        (Ok(exe), Some(command)) => entry_points_to(&command, &exe),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    const EXE: &str = r"C:\Program Files\DayNote\DayNote.exe";
+
+    #[test]
+    fn an_entry_belongs_to_the_program_it_launches() {
+        let exe = Path::new(EXE);
+        assert!(entry_points_to(r#""C:\Program Files\DayNote\DayNote.exe" --autostart"#, exe), "quoted");
+        assert!(entry_points_to(r"C:\Program Files\DayNote\DayNote.exe --autostart", exe), "unquoted, with spaces");
+        assert!(entry_points_to(r"C:\Program Files\DayNote\DayNote.exe", exe), "no arguments");
+        assert!(entry_points_to(r#""c:\program files\daynote\DAYNOTE.EXE" --autostart"#, exe), "case");
+        assert!(entry_points_to(r#""\\?\C:\Program Files\DayNote\DayNote.exe" --autostart"#, exe), "verbatim prefix");
+        assert!(entry_points_to(r#""C:\Program Files\DayNote\DayNote.exe" --autostart"#, Path::new(r"\\?\C:\Program Files\DayNote\DayNote.exe")), "verbatim exe");
+        assert!(entry_points_to(r"\\?\UNC\server\share\DayNote.exe --autostart", Path::new(r"\\server\share\DayNote.exe")), "UNC");
+    }
+
+    #[test]
+    fn an_entry_for_another_copy_is_not_ours() {
+        let exe = Path::new(EXE);
+        assert!(!entry_points_to(r#""D:\Portable\DayNote\DayNote.exe" --autostart"#, exe));
+        assert!(!entry_points_to(r"D:\Portable\DayNote\DayNote.exe --autostart", exe));
+        assert!(!entry_points_to(r"C:\Program Files\DayNote\DayNote.exe.old --autostart", exe), "longer name");
+        assert!(!entry_points_to(r#""C:\Program Files\DayNote\DayNote.exe --autostart"#, exe), "unterminated quote");
+        assert!(!entry_points_to("", exe), "empty");
+        assert!(!entry_points_to("   ", exe), "blank");
+    }
+
+    #[test]
+    fn only_our_own_unquoted_entry_is_rewritten() {
+        let exe = Path::new(EXE);
+        assert!(needs_rewrite(r"C:\Program Files\DayNote\DayNote.exe --autostart", exe));
+        assert!(needs_rewrite(r#""c:\program files\daynote\daynote.exe" --autostart"#, exe), "other spelling of our path");
+        assert!(!needs_rewrite(r#""C:\Program Files\DayNote\DayNote.exe" --autostart"#, exe), "already canonical");
+        assert!(!needs_rewrite(r"D:\Portable\DayNote\DayNote.exe --autostart", exe), "another copy");
+        assert!(!needs_rewrite("", exe));
+    }
+
+    #[test]
+    fn first_run_leaves_another_copys_autostart_alone() {
+        let exe = Path::new(EXE);
+        assert!(first_run_enables(None, exe), "no entry yet");
+        assert!(first_run_enables(Some(""), exe), "an empty value launches nothing");
+        assert!(first_run_enables(Some(r"C:\Program Files\DayNote\DayNote.exe --autostart"), exe));
+        assert!(!first_run_enables(Some(r#""D:\Portable\DayNote\DayNote.exe" --autostart"#), exe));
+    }
+
     #[test]
     fn tooltip_text() {
         assert_eq!(super::tip_text(0), "DayNote · 今天都做完了");
