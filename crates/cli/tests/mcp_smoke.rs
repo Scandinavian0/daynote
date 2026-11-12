@@ -3,7 +3,12 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 
-fn session(dir: &std::path::PathBuf, args: &[&str], messages: &[Value], raw_extra: &[&str]) -> Vec<Value> {
+fn session(
+    dir: &std::path::PathBuf,
+    args: &[&str],
+    messages: &[Value],
+    raw_extra: &[&str],
+) -> Vec<Value> {
     let mut input = String::new();
     for m in messages {
         input.push_str(&serde_json::to_string(m).unwrap());
@@ -63,8 +68,13 @@ fn scripted_session_gets_exactly_one_line_per_request() {
     let tools = replies[1]["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"add_tasks") && names.contains(&"get_summary"));
-    assert!(!names.contains(&"snooze_task"), "internal tools stay hidden");
-    assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object" && t["description"].is_string()));
+    assert!(
+        !names.contains(&"snooze_task"),
+        "internal tools stay hidden"
+    );
+    assert!(tools
+        .iter()
+        .all(|t| t["inputSchema"]["type"] == "object" && t["description"].is_string()));
 
     assert_eq!(replies[2]["result"]["isError"], false);
     let added = tool_payload(&replies[2]);
@@ -86,7 +96,7 @@ fn protocol_edge_cases() {
         &dir,
         &["--source", "my-agent"],
         &[
-            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1999-01-01","clientInfo":{"name":"Codex CLI"}}}),
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1999-01-01","capabilities":{},"clientInfo":{"name":"Codex CLI","version":"1"}}}),
             json!({"jsonrpc":"2.0","id":2,"method":"ping"}),
             json!({"jsonrpc":"2.0","id":3,"method":"resources/list"}),
             json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}),
@@ -100,13 +110,19 @@ fn protocol_edge_cases() {
     assert_eq!(replies[0]["result"]["protocolVersion"], "2025-11-25");
     assert_eq!(replies[1]["result"], json!({}));
     assert_eq!(replies[2]["error"]["code"], -32601);
-    assert_eq!(replies[3]["error"]["code"], -32602, "internal tool is not callable over MCP");
+    assert_eq!(
+        replies[3]["error"]["code"], -32602,
+        "internal tool is not callable over MCP"
+    );
     assert_eq!(replies[4]["result"]["isError"], true);
     let err = tool_payload(&replies[4]);
     assert_eq!(err["error"]["code"], "not_found");
     let added = tool_payload(&replies[5]);
     assert_eq!(added["tasks"][0]["title"], "换行\n标题");
-    assert_eq!(added["tasks"][0]["source"], "my-agent", "--source overrides clientInfo");
+    assert_eq!(
+        added["tasks"][0]["source"], "my-agent",
+        "--source overrides clientInfo"
+    );
     assert_eq!(replies[6]["error"]["code"], -32700);
     assert!(replies[6]["id"].is_null());
 }
@@ -118,11 +134,52 @@ fn client_name_maps_to_source() {
         &dir,
         &[],
         &[
-            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","clientInfo":{"name":"Codex-MCP-Client"}}}),
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"Codex-MCP-Client","version":"1"}}}),
             json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"add_tasks","arguments":{"tasks":[{"title":"x"}]}}}),
         ],
         &[],
     );
     assert_eq!(replies[0]["result"]["protocolVersion"], "2024-11-05");
     assert_eq!(tool_payload(&replies[1])["tasks"][0]["source"], "codex");
+}
+
+#[test]
+fn legacy_stdio_exits_at_eof_without_emitting_a_reply() {
+    let dir = data_dir("mcp-eof");
+    assert!(session(&dir, &[], &[], &[]).is_empty());
+    assert!(session(
+        &dir,
+        &[],
+        &[json!({"jsonrpc":"2.0","method":"notifications/initialized"})],
+        &[]
+    )
+    .is_empty());
+}
+
+#[test]
+fn legacy_stdio_uses_shared_validation_and_protects_reserved_sources() {
+    let dir = data_dir("mcp-reserved");
+    for source in ["user", "APP"] {
+        let replies = session(
+            &dir,
+            &["--source", source],
+            &[
+                json!({"id":1,"method":"ping"}),
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"add_tasks","arguments":{"tasks":[{"title":"reserved source"}]}}}),
+            ],
+            &[],
+        );
+        assert_eq!(replies[0]["error"]["code"], -32600);
+        assert_eq!(tool_payload(&replies[1])["tasks"][0]["source"], "mcp");
+    }
+    let replies = session(
+        &dir,
+        &[],
+        &[
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"user","version":"1"}}}),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"add_tasks","arguments":{"tasks":[{"title":"client source"}]}}}),
+        ],
+        &[],
+    );
+    assert_eq!(tool_payload(&replies[1])["tasks"][0]["source"], "mcp");
 }

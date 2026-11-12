@@ -4,6 +4,7 @@
 //! (GUI, CLI, MCP, HTTP) is a thin shell over it so they behave identically.
 
 pub mod api;
+pub mod mcp;
 mod db;
 mod notes;
 mod recurring;

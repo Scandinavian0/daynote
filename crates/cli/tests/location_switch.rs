@@ -87,7 +87,7 @@ impl Mcp {
             .stderr(Stdio::null()).spawn().unwrap();
         let out = BufReader::new(child.stdout.take().unwrap());
         let mut mcp = Mcp { child, out, next_id: 1 };
-        mcp.request("initialize", json!({"protocolVersion": "2025-06-18", "clientInfo": {"name": "test"}}));
+        mcp.request("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}));
         mcp
     }
 

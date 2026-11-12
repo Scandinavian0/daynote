@@ -72,6 +72,7 @@
   }
 
   const mcpCommand = $derived(`"${app.cli_path}" mcp`);
+  const mcpUrl = $derived(`http://127.0.0.1:${app.http_active_port}/mcp`);
   const httpUrl = $derived(`http://127.0.0.1:${app.http_active_port}/v1`);
   let port = $state("");
   let portDirty = $state(false);
@@ -100,7 +101,7 @@
     tokenFailed = false;
     try {
       await cmd("regenerate_api_token");
-      tokenMessage = "令牌已重新生成，旧令牌已失效；请让 HTTP 客户端重新读取令牌文件";
+      tokenMessage = "令牌已重新生成，旧令牌已失效；请重新读取令牌文件，更新 MCP / HTTP 客户端配置并重新连接";
     } catch (e) {
       tokenMessage = errorText(e);
       tokenFailed = true;
@@ -142,7 +143,7 @@
         port = String(app.http_port);
         portDirty = false;
       }
-      httpMessage = key === "http_port" ? "端口已保存" : value === "true" ? "HTTP 接口已开启" : "HTTP 接口已关闭";
+      httpMessage = key === "http_port" ? "端口已保存" : value === "true" ? "MCP / HTTP 接口已开启" : "MCP / HTTP 接口已关闭";
     } catch (e) {
       httpMessage = errorText(e);
       httpFailed = true;
@@ -244,14 +245,9 @@
 
   <section>
     <h3>AI 接口</h3>
-    <p class="help">Codex 和 Claude Code 通过 MCP 读写这里的事项；应用没开时也能用。</p>
-    <div class="kv">
-      <span class="label">MCP 启动命令</span>
-      <code>{mcpCommand}</code>
-      <button class="icon-btn" title="复制" onclick={() => copy(mcpCommand)}><Icon name="copy" size={14} /></button>
-    </div>
+    <p class="help">Codex 和 Claude Code 通过共享 MCP 地址读写事项，多个聊天共用 DayNote 的服务，无需为每个聊天启动 CLI。DayNote 运行（含托盘驻留）时可用，完全退出后服务停止。</p>
     <label class="line">
-      <span>本地 HTTP 接口</span>
+      <span>共享 MCP / 本地 HTTP 接口</span>
       <input type="checkbox" class="switch" checked={app.http_enabled} disabled={httpSaving} aria-label="开启本地 HTTP 接口" onchange={toggleHttp} />
     </label>
     <form class="line" onsubmit={(e) => { e.preventDefault(); saveHttp("http_port", port); }}>
@@ -259,14 +255,19 @@
       <input id="http-port" class="field port-field" type="text" inputmode="numeric" aria-label="HTTP 端口" value={portDirty ? port : String(app.http_port)} disabled={httpSaving} oninput={(e) => { port = e.currentTarget.value; portDirty = true; httpMessage = ""; }} />
       <button type="submit" class="btn" disabled={httpSaving}>{httpSaving ? "保存中…" : "保存端口"}</button>
     </form>
-    <p class="help">端口范围 1024–65535。保存后立即生效；接口关闭时保存端口不会开启接口。</p>
+    <p class="help">端口范围 1024–65535。MCP 和 REST 共用开关与端口，保存后立即生效；接口关闭时保存端口不会开启接口。修改后需同步客户端地址并重新连接。</p>
     {#if httpMessage}<p class="help" class:failed={httpFailed} role={httpFailed ? "alert" : "status"}>{httpMessage}</p>{/if}
-    <p class="help" role="status">{!app.http_enabled ? "HTTP 接口已关闭" : app.http_active_port ? `正在监听 127.0.0.1:${app.http_active_port}` : "HTTP 接口未启动"}</p>
+    <p class="help" role="status">{!app.http_enabled ? "MCP / HTTP 接口已关闭" : app.http_active_port ? `共享 MCP / HTTP 服务正在监听 127.0.0.1:${app.http_active_port}` : "MCP / HTTP 接口未启动"}</p>
     {#if app.http_enabled && app.http_error}<p class="help failed" role="alert">{app.http_error}</p>{/if}
     {#if app.http_enabled}
       {#if app.http_active_port}
       <div class="kv">
-        <span class="label">地址</span>
+        <span class="label">共享 MCP 地址（Streamable HTTP）</span>
+        <code>{mcpUrl}</code>
+        <button class="icon-btn" title="复制共享 MCP 地址" aria-label="复制共享 MCP 地址" onclick={() => copy(mcpUrl)}><Icon name="copy" size={14} /></button>
+      </div>
+      <div class="kv">
+        <span class="label">REST 地址</span>
         <code>{httpUrl}</code>
         <button class="icon-btn" title="复制" onclick={() => copy(httpUrl)}><Icon name="copy" size={14} /></button>
       </div>
@@ -274,12 +275,21 @@
       <div class="kv">
         <span class="label">令牌文件</span>
         <code>{app.token_path}</code>
-        <button class="icon-btn" title="复制路径" onclick={() => copy(app.token_path)}><Icon name="copy" size={14} /></button>
+        <button class="icon-btn" title="复制令牌文件路径" aria-label="复制令牌文件路径" onclick={() => copy(app.token_path)}><Icon name="copy" size={14} /></button>
       </div>
     {/if}
-    <p class="help">重新生成后旧令牌立即失效，外部 HTTP 客户端需要更新令牌；MCP 启动命令会自动生成。</p>
+    <p class="help">MCP 和 REST 使用同一访问令牌。将令牌文件内容填入客户端的 Authorization: Bearer 请求头；这里仅显示文件路径。重新生成后旧令牌立即失效，请重新读取文件，更新客户端配置并重新连接。</p>
     <button class="btn" disabled={tokenSaving || httpSaving} onclick={regenerateToken}>{tokenSaving ? "正在更新令牌…" : "重新生成访问令牌"}</button>
     {#if tokenMessage}<p class="help" class:failed={tokenFailed} role={tokenFailed ? "alert" : "status"}>{tokenMessage}</p>{/if}
+    <details>
+      <summary>旧版 MCP stdio 兼容方式</summary>
+      <p class="help">保留供已有配置使用，升级不会自动迁移客户端。每个聊天会启动独立的常驻 CLI；需要共用服务时，请改用上方 MCP 地址。此方式不依赖 DayNote 运行，也不使用访问令牌。</p>
+      <div class="kv">
+        <span class="label">兼容启动命令</span>
+        <code>{mcpCommand}</code>
+        <button class="icon-btn" title="复制兼容启动命令" onclick={() => copy(mcpCommand)}><Icon name="copy" size={14} /></button>
+      </div>
+    </details>
     <div class="kv">
       <span class="label">数据目录</span>
       <code>{app.data_dir}</code>
@@ -287,7 +297,7 @@
     </div>
     <label for="data-directory">下次启动的数据目录</label>
     <input id="data-directory" class="field" aria-label="数据目录" value={directoryDirty ? directory : app.next_data_dir || app.data_dir} disabled={directorySaving || app.data_dir_overridden} oninput={(e) => { directory = e.currentTarget.value; directoryDirty = true; directoryMessage = ""; }} />
-    <p class="help">仅切换目录，不自动搬迁；原数据保留。先备份并复制数据，保存后重启 DayNote；已在运行的 MCP 服务会在下一次调用时跟上。选择目录不会升级其中的数据库。</p>
+    <p class="help">仅切换目录，不自动搬迁；原数据保留。先备份并复制数据，保存后重启 DayNote；共享 MCP 客户端需重新连接，并使用新目录中的令牌。旧版 stdio 会在下一次调用时跟上。选择目录不会升级其中的数据库。</p>
     {#if app.data_dir_overridden}<p class="help">当前由 DAYNOTE_DATA_DIR 环境变量指定目录，请修改环境变量后重启。</p>{/if}
     <button class="btn" disabled={directorySaving || app.data_dir_overridden || !(directoryDirty ? directory : app.next_data_dir || app.data_dir).trim()} onclick={saveDirectory}>{directorySaving ? "保存中…" : "保存数据目录"}</button>
     {#if app.next_data_dir && app.next_data_dir !== app.data_dir}<p class="help" role="status">已选择新目录，重启 DayNote 后生效；在此之前应用和 AI 接口都继续使用当前目录。</p>{/if}
@@ -455,6 +465,8 @@
     width: 54px;
   }
   .port-field { width: 82px; }
+  details summary { cursor: pointer; font-size: 12px; color: var(--text-2); }
+  details[open] { display: flex; flex-direction: column; gap: 8px; }
   .help.failed { color: var(--danger, #d04444); }
   .btn:disabled {
     opacity: 0.4;

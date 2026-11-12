@@ -57,6 +57,7 @@ class Store {
   isToday = $derived(this.date === this.today);
 
   #seq = 0;
+  #appSeq = 0;
   #noteTimer: ReturnType<typeof setTimeout> | undefined;
   #noteVersion = 0;
   #noteDrafts = new Map<string, { content: string; version: number }>();
@@ -64,13 +65,14 @@ class Store {
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
 
   async init() {
-    await this.loadApp();
     await on("data-changed", () => this.refresh());
     await on("app-state-changed", () => this.loadApp());
     await on<{ date?: string }>("navigate", (p) => {
       this.view = "list";
       this.go(p?.date ?? this.today);
     });
+    // Subscribe before reading: HTTP startup can finish while app_state is in flight.
+    await this.loadApp();
     // Follow the calendar across midnight (and after the PC wakes from sleep).
     setInterval(() => {
       const now = todayStr();
@@ -85,10 +87,12 @@ class Store {
   }
 
   async loadApp() {
+    const seq = ++this.#appSeq;
     try {
-      this.app = await cmd<AppState>("app_state");
+      const app = await cmd<AppState>("app_state");
+      if (seq === this.#appSeq) this.app = app;
     } catch (e) {
-      this.fail(e);
+      if (seq === this.#appSeq) this.fail(e);
     }
   }
 

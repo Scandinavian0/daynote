@@ -75,6 +75,11 @@ try {
     $token = (Get-Content -LiteralPath (Join-Path $dataPath 'api-token.txt') -Raw).Trim()
     $desktopTasks = Invoke-RestMethod 'http://127.0.0.1:47821/v1/tasks' -Headers @{Authorization = "Bearer $token"}
     if (@($desktopTasks.tasks).Count -ne 1) { throw 'Desktop HTTP and installed CLI do not share task data.' }
+    node ./scripts/verify-shared-mcp.mjs 'http://127.0.0.1:47821/mcp' (Join-Path $dataPath 'api-token.txt') $expectedVersion --write-fixture
+    if ($LASTEXITCODE -ne 0) { throw 'Installed shared HTTP MCP verification failed.' }
+    $listeners = @(Get-NetTCPConnection -State Listen -LocalPort 47821)
+    if ($listeners.Count -ne 1 -or $listeners[0].OwningProcess -ne $app.Id) { throw 'Shared MCP must use the single desktop listener.' }
+    if (Get-Process -Name daynote-cli -ErrorAction SilentlyContinue) { throw 'Shared MCP left a CLI server running.' }
     $token = $null
 } finally {
     # Only stop the process this isolated smoke test started; all data is synthetic.
@@ -90,5 +95,5 @@ if (Test-Path -LiteralPath $desktopShortcut) { throw 'Uninstall left the desktop
 if (!(Test-Path -LiteralPath (Join-Path $dataPath 'daynote.db'))) { throw 'Uninstall removed user task data.' }
 $retained = & './target/release/daynote-cli.exe' list | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or @($retained.tasks).Count -ne 1) { throw 'Uninstall did not preserve readable task data.' }
-Write-Output 'PASS: installer files, desktop target/icon, installed CLI/MCP, desktop startup/HTTP, uninstall, retained task database.'
+Write-Output 'PASS: installer files, desktop target/icon, legacy CLI/MCP, 20 shared HTTP MCP clients, single desktop listener, zero resident CLI processes, uninstall, retained task database.'
 if ($BaselineInstaller) { Write-Output 'PASS: in-place /UPDATE from baseline retained install path, desktop shortcut and task data.' }

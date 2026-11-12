@@ -196,5 +196,8 @@ fn setup_shell(
     scheduler::spawn(app.clone(), kick_rx, autostarted);
     scheduler::spawn_watcher(app.clone());
     win::spawn_saver(app.clone(), save_rx);
+    // Windows may load while hotkey registration and HTTP startup are in flight.
+    // Publish the settled state after initialization has released all shell locks.
+    state::app_state_changed(app);
     Ok(())
 }

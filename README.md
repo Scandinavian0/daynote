@@ -4,7 +4,7 @@
 
 ## 下载安装
 
-前往 [Releases](https://github.com/Scandinavian0/daynote/releases/latest)，下载 `DayNote-0.1.2-windows-x64-setup.exe` 并运行。
+前往 [Releases](https://github.com/Scandinavian0/daynote/releases/latest)，下载 `DayNote-0.1.3-windows-x64-setup.exe` 并运行。
 
 - 支持 Windows 10 / 11 x64；使用 Microsoft Edge WebView2 Runtime，缺少时安装程序会尝试联网安装。
 - 默认安装到当前用户目录，无需管理员权限。安装后自动创建 **DayNote 桌面快捷方式**，同时提供开始菜单入口和卸载程序。
@@ -17,10 +17,12 @@
 - 按日期浏览、逾期事项、每日便签和重复任务。
 - 任务提醒、稍后提醒、晨间简报、晚间回顾。
 - 系统托盘、可置顶面板、全局速记快捷键及开机启动设置。
-- MCP（stdio）、JSON 命令行和仅限本机的 HTTP 接口。
+- 共享 MCP（Streamable HTTP）、JSON 命令行和仅限本机的 REST 接口；保留旧版 MCP stdio 兼容方式。
 - 自动检查新版本，提示确认后下载、验证签名并安装；设置页可手动检查。
 
-在设置的 **AI 接口** 中修改 HTTP 端口并保存。有效范围为 `1024–65535`；接口只绑定 `127.0.0.1`。端口冲突会显示错误，保留原来的设置与服务。还可重新生成 HTTP 令牌、保存下次启动使用的数据目录。MCP 启动命令根据实际安装位置生成。
+设置的 **AI 接口** 主推共享 MCP 地址：`http://127.0.0.1:<实际端口>/mcp`。多个聊天连接同一个 DayNote 服务，无需为每个聊天启动常驻 CLI。DayNote 运行（含托盘驻留）时服务可用，完全退出后停止；已有 stdio 配置保留兼容，升级不会自动迁移客户端。
+
+MCP 与 REST 共用设置里的 HTTP 开关、端口和 Bearer 令牌。端口有效范围为 `1024–65535`，只绑定 `127.0.0.1`；端口冲突会显示错误，保留原来的设置与服务。请使用界面显示的实际运行地址，以及令牌文件中的内容配置客户端。重新生成令牌后，需要重新读取文件、更新客户端配置并重新连接。设置页还可保存下次启动使用的数据目录。
 
 “AI 接口”是外部 AI 代理访问备忘录的接口，不会调用模型服务，也不需要在 DayNote 中输入模型 API Key。详见 [AI 接口说明](docs/AI-接口说明.md)。
 
@@ -61,8 +63,8 @@ npm run release:build -- --unsigned
 | 路径 | 内容 |
 | --- | --- |
 | `crates/core` | SQLite 存储、任务、重复事项及统一业务 API |
-| `crates/cli` | JSON 命令行和 MCP stdio 服务 |
-| `src-tauri` | Windows 桌面程序、托盘、提醒、快捷键、HTTP 接口与安装配置 |
+| `crates/cli` | JSON 命令行和兼容 MCP stdio 服务 |
+| `src-tauri` | Windows 桌面程序、托盘、提醒、快捷键、共享 MCP / REST 服务与安装配置 |
 | `ui` | Svelte 5 界面 |
 | `scripts` | 发布构建脚本 |
 | `docs` | 安装、AI 接口与发布记录 |

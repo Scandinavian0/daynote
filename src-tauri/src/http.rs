@@ -2,6 +2,7 @@
 //! JSON body without touching sockets, so the security checks and routing are unit tested;
 //! [`Server`] provides bounded HTTP/1 transport around it.
 use daynote_core::api::{tool_specs, ApiError};
+use daynote_core::mcp;
 use serde_json::{json, Map, Value};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -151,10 +152,7 @@ fn query_args(query: &str, allowed: &[&str]) -> Map<String, Value> {
 /// Who to record as the writer. `user` and `app` are reserved for the person at the
 /// panel and for the shell itself, so an HTTP caller cannot pass itself off as either.
 fn source_of(req: &Req) -> String {
-    header(req, "x-daynote-source")
-        .map(|s| s.trim().to_lowercase())
-        .filter(|s| !s.is_empty() && s != "user" && s != "app")
-        .unwrap_or_else(|| "http".into())
+    mcp::source_tag(header(req, "x-daynote-source").unwrap_or(""), "http")
 }
 
 fn path_of(url: &str) -> &str {
@@ -203,6 +201,10 @@ pub fn handle(req: &Req, g: &Guard, backend: &dyn Backend) -> Reply {
     let method = req.method.to_ascii_uppercase();
     let only = |m: &str| method == m;
 
+    if path == "/mcp" {
+        return handle_mcp(req, g, backend);
+    }
+
     if path == "/v1/health" {
         if !only("GET") {
             return error(405, "method_not_allowed", "只支持 GET");
@@ -215,12 +217,7 @@ pub fn handle(req: &Req, g: &Guard, backend: &dyn Backend) -> Reply {
             if !only("GET") {
                 return error(405, "method_not_allowed", "只支持 GET");
             }
-            let tools: Vec<Value> = tool_specs()
-                .into_iter()
-                .filter(|t| t.public)
-                .map(|t| json!({"name": t.name, "description": t.description, "inputSchema": t.input_schema}))
-                .collect();
-            ok(json!({ "tools": tools }))
+            ok(mcp::tools_list())
         }
         "/v1/tasks" | "/v1/summary" => {
             if !only("GET") {
@@ -266,6 +263,121 @@ pub fn handle(req: &Req, g: &Guard, backend: &dyn Backend) -> Reply {
             run(backend, tool, args, &source_of(req))
         }
     }
+}
+
+/// Stateless Streamable HTTP: every request supplies its source, so another
+/// client's initialize cannot change who is recorded as the writer.
+fn handle_mcp(req: &Req, g: &Guard, backend: &dyn Backend) -> Reply {
+    if let Some(refused) = mcp_gate(req) {
+        return refused;
+    }
+    let message = match serde_json::from_slice(req.body) {
+        Ok(message) => message,
+        Err(error) => {
+            return Reply {
+                status: 400,
+                body: mcp::error(Value::Null, -32700, format!("Parse error: {error}")),
+                wrote: false,
+            }
+        }
+    };
+    let source = mcp::source_tag(header(req, "x-daynote-source").unwrap_or(""), "mcp");
+    let mut wrote = false;
+    let mut call = |name: &str, args| {
+        let result = backend.call(name, args, &source);
+        wrote |= result.is_ok() && is_write(name);
+        result
+    };
+    let reply = match message {
+        // This older revision allowed batches. Later revisions require one message
+        // per POST; a missing version header explicitly falls back to 2025-03-26.
+        Value::Array(items)
+            if !items.is_empty()
+                && header(req, "mcp-protocol-version").unwrap_or("2025-03-26") == "2025-03-26" =>
+        {
+            let replies: Vec<_> = items
+                .into_iter()
+                .filter_map(|message| {
+                    mcp::handle(message, mcp::HTTP_SUPPORTED_VERSIONS, g.version, &mut call)
+                })
+                .collect();
+            (!replies.is_empty()).then_some(Value::Array(replies))
+        }
+        message => mcp::handle(message, mcp::HTTP_SUPPORTED_VERSIONS, g.version, call),
+    };
+    match reply {
+        Some(body) => Reply {
+            status: if body.pointer("/error/code").and_then(Value::as_i64) == Some(-32600) {
+                400
+            } else {
+                200
+            },
+            body,
+            wrote,
+        },
+        None => Reply {
+            status: 202,
+            body: Value::Null,
+            wrote: false,
+        },
+    }
+}
+
+/// The Streamable HTTP transport's request headers are checked before reading a
+/// body, under the same authentication/Origin/Host gate as REST.
+fn mcp_gate(req: &Req) -> Option<Reply> {
+    let version = header(req, "mcp-protocol-version").unwrap_or("2025-03-26");
+    if !mcp::HTTP_SUPPORTED_VERSIONS.contains(&version) {
+        return Some(error(
+            400,
+            "unsupported_protocol_version",
+            "不支持这个 MCP 协议版本",
+        ));
+    }
+    if !req.method.eq_ignore_ascii_case("POST") {
+        return Some(error(
+            405,
+            "method_not_allowed",
+            "MCP 只支持 POST，不提供 SSE 流或会话删除",
+        ));
+    }
+    let json_type = header(req, "content-type")
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"));
+    if !json_type {
+        return Some(error(
+            415,
+            "unsupported_media_type",
+            "Content-Type 必须是 application/json",
+        ));
+    }
+    let accepts = |wanted: &str| {
+        req.headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("accept"))
+            .flat_map(|(_, value)| value.split(','))
+            .any(|entry| {
+                let mut parts = entry.split(';');
+                parts
+                    .next()
+                    .is_some_and(|media| media.trim().eq_ignore_ascii_case(wanted))
+                    && parts.all(|parameter| match parameter.trim().split_once('=') {
+                        Some((name, value)) if name.trim().eq_ignore_ascii_case("q") => value
+                            .trim()
+                            .parse::<f32>()
+                            .is_ok_and(|q| q > 0.0 && q <= 1.0),
+                        _ => true,
+                    })
+            })
+    };
+    if !accepts("application/json") || !accepts("text/event-stream") {
+        return Some(error(
+            406,
+            "not_acceptable",
+            "Accept 必须包含 application/json 和 text/event-stream",
+        ));
+    }
+    None
 }
 
 // Token ---------------------------------------------------------------------
@@ -464,6 +576,8 @@ async fn serve_request(
     };
     let reply = if let Some(refused) = gate(&head, &guard) {
         refused
+    } else if let Some(refused) = (path_of(&url) == "/mcp").then(|| mcp_gate(&head)).flatten() {
+        refused
     } else if method == "GET" {
         handle(&head, &guard, crate::state::lock(&backend).as_ref())
     } else if parts
@@ -506,11 +620,21 @@ async fn serve_request(
     if reply.wrote {
         crate::state::lock(&on_write)();
     }
-    let body = serde_json::to_vec(&reply.body).unwrap_or_else(|_| b"{}".to_vec());
-    Ok(hyper::Response::builder()
+    let body = if reply.status == 202 {
+        Vec::new()
+    } else {
+        serde_json::to_vec(&reply.body).unwrap_or_else(|_| b"{}".to_vec())
+    };
+    let mut response = hyper::Response::builder()
         .status(reply.status)
-        .header("Content-Type", "application/json; charset=utf-8")
-        .header("Connection", "close")
+        .header("Connection", "close");
+    if reply.status != 202 {
+        response = response.header("Content-Type", "application/json; charset=utf-8");
+    }
+    if path_of(&url) == "/mcp" && reply.status == 405 {
+        response = response.header("Allow", "POST");
+    }
+    Ok(response
         .body(http_body_util::Full::new(hyper::body::Bytes::from(body)))
         .unwrap())
 }
@@ -520,6 +644,381 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+
+    struct StoredBackend(Mutex<daynote_core::Store>);
+
+    impl Backend for StoredBackend {
+        fn call(&self, tool: &str, args: Value, source: &str) -> Result<Value, ApiError> {
+            daynote_core::api::dispatch(
+                &mut self.0.lock().unwrap(),
+                tool,
+                args,
+                &daynote_core::api::Ctx {
+                    source: source.into(),
+                    now: daynote_core::now_local(),
+                },
+            )
+        }
+    }
+
+    fn stored_server() -> (
+        tempfile::TempDir,
+        Server,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = daynote_core::Store::open(&dir.path().join("daynote.db")).unwrap();
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = writes.clone();
+        let server = Server::start(
+            0,
+            "test-token".into(),
+            "test".into(),
+            Box::new(StoredBackend(Mutex::new(store))),
+            Box::new(move || {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }),
+        )
+        .unwrap();
+        (dir, server, writes)
+    }
+
+    fn mcp_post(port: u16, source: &str, message: Value) -> (u16, String, Value) {
+        let mut headers = mcp_headers(port);
+        headers.push(("X-DayNote-Source".into(), source.into()));
+        mcp_wire(port, "POST", &headers, &message.to_string())
+    }
+
+    fn mcp_headers(port: u16) -> Vec<(String, String)> {
+        vec![
+            ("Host".into(), format!("127.0.0.1:{port}")),
+            ("Authorization".into(), "Bearer test-token".into()),
+            ("Content-Type".into(), "application/json".into()),
+            (
+                "Accept".into(),
+                "application/json, text/event-stream".into(),
+            ),
+            ("MCP-Protocol-Version".into(), "2025-11-25".into()),
+        ]
+    }
+
+    fn mcp_wire(
+        port: u16,
+        method: &str,
+        headers: &[(String, String)],
+        body: &str,
+    ) -> (u16, String, Value) {
+        let mut stream = connect(port);
+        let mut request = format!(
+            "{method} /mcp HTTP/1.1\r\nContent-Length: {}\r\nConnection: close\r\n",
+            body.len()
+        );
+        for (name, value) in headers {
+            request.push_str(&format!("{name}: {value}\r\n"));
+        }
+        request.push_str(&format!("\r\n{body}"));
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw).unwrap();
+        let (head, body) = raw.split_once("\r\n\r\n").unwrap();
+        let status = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+        let value = if body.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(body).unwrap()
+        };
+        (status, head.to_string(), value)
+    }
+
+    #[test]
+    fn mcp_enforces_http_contract_before_dispatch() {
+        let (_dir, server, writes) = stored_server();
+        let port = server.port;
+        let call = mcp_call(
+            1,
+            "add_tasks",
+            json!({"tasks":[{"title":"must not be added"}]}),
+        )
+        .to_string();
+        for (name, value, status) in [
+            ("Content-Type", Some("text/plain"), 415),
+            ("Content-Type", None, 415),
+            ("Accept", None, 406),
+            ("Accept", Some("application/json"), 406),
+            (
+                "Accept",
+                Some("application/json, text/event-stream;q=0"),
+                406,
+            ),
+            ("MCP-Protocol-Version", Some("2099-01-01"), 400),
+            ("MCP-Protocol-Version", Some("2024-11-05"), 400),
+            ("Host", Some("evil.example"), 403),
+            ("Origin", Some("null"), 403),
+            ("Origin", Some("https://evil.example"), 403),
+            ("Authorization", None, 401),
+            ("Authorization", Some("Bearer wrong-token"), 401),
+        ] {
+            let mut headers = mcp_headers(port);
+            headers.retain(|(key, _)| key != name);
+            if let Some(value) = value {
+                headers.push((name.into(), value.into()));
+            }
+            let reply = mcp_wire(port, "POST", &headers, &call);
+            assert_eq!(reply.0, status, "{name}={value:?}: {}", reply.2);
+        }
+        for method in ["GET", "DELETE", "PUT"] {
+            let (status, head, _) = mcp_wire(port, method, &mcp_headers(port), "");
+            assert_eq!(status, 405);
+            assert!(head.to_lowercase().contains("allow: post"));
+        }
+        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let mut headers = mcp_headers(port);
+        headers.retain(|(name, _)| name != "MCP-Protocol-Version");
+        assert_eq!(
+            mcp_wire(
+                port,
+                "POST",
+                &headers,
+                &json!({"jsonrpc":"2.0","id":1,"method":"ping"}).to_string()
+            )
+            .0,
+            200
+        );
+    }
+
+    #[test]
+    fn mcp_json_rpc_errors_notifications_and_sources_are_isolated() {
+        let (_dir, server, writes) = stored_server();
+        let port = server.port;
+        for (raw, status, code) in [
+            ("{", 400, -32700),
+            ("[]", 400, -32600),
+            ("1", 400, -32600),
+            (r#"{"id":7,"method":"ping"}"#, 400, -32600),
+            (
+                r#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#,
+                400,
+                -32600,
+            ),
+            (r#"{"jsonrpc":"2.0","id":1.5,"method":"ping"}"#, 400, -32600),
+            (r#"{"jsonrpc":"2.0","id":7}"#, 400, -32600),
+            (r#"{"jsonrpc":"2.0","id":7,"method":1}"#, 400, -32600),
+            (
+                r#"{"jsonrpc":"2.0","id":7,"method":"missing"}"#,
+                200,
+                -32601,
+            ),
+            (
+                r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":[]}"#,
+                200,
+                -32602,
+            ),
+            (
+                r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"add_tasks","arguments":[]}}"#,
+                200,
+                -32602,
+            ),
+            (
+                r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"set_setting"}}"#,
+                200,
+                -32602,
+            ),
+            (
+                r#"{"jsonrpc":"2.0","id":7,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#,
+                200,
+                -32602,
+            ),
+        ] {
+            let reply = mcp_wire(port, "POST", &mcp_headers(port), raw);
+            assert_eq!(
+                (reply.0, reply.2["error"]["code"].as_i64().unwrap()),
+                (status, code),
+                "{raw}: {}",
+                reply.2
+            );
+        }
+        for message in [
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            json!({"jsonrpc":"2.0","id":2,"result":{}}),
+            json!({"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"unsupported"}}),
+            json!({"jsonrpc":"2.0","method":"tools/call","params":{"name":"add_tasks","arguments":{"tasks":[{"title":"notification must not write"}]}}}),
+        ] {
+            let reply = mcp_post(port, "codex", message);
+            assert_eq!((reply.0, reply.2), (202, Value::Null));
+        }
+        let (_, _, failed) = mcp_post(
+            port,
+            "codex",
+            mcp_call(8, "complete_task", json!({"id":9999})),
+        );
+        assert_eq!(failed["result"]["isError"], true);
+        assert_eq!(mcp_payload(&failed)["error"]["code"], "not_found");
+        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let (_, _, future) = mcp_post(port, "", mcp_init("app", "2099-01-01"));
+        assert_eq!(future["result"]["protocolVersion"], "2025-11-25");
+        for source in ["user", "APP", "", " User "] {
+            let (_, _, added) = mcp_post(
+                port,
+                source,
+                mcp_call(9, "add_tasks", json!({"tasks":[{"title":"source check"}]})),
+            );
+            assert_eq!(mcp_payload(&added)["tasks"][0]["source"], "mcp");
+        }
+        let mut legacy_headers = mcp_headers(port);
+        legacy_headers.retain(|(name, _)| name != "MCP-Protocol-Version");
+        let batch = json!([
+            {"jsonrpc":"2.0","id":"old","method":"ping"},
+            {"jsonrpc":"2.0","method":"notifications/initialized"}
+        ]);
+        let (_, _, reply) = mcp_wire(port, "POST", &legacy_headers, &batch.to_string());
+        assert_eq!(reply, json!([{"jsonrpc":"2.0","id":"old","result":{}}]));
+    }
+
+    #[test]
+    fn mcp_parallel_clients_keep_their_own_sources() {
+        let (_dir, server, writes) = stored_server();
+        let port = server.port;
+        let barrier = Arc::new(std::sync::Barrier::new(12));
+        let clients: Vec<_> = (0..12)
+            .map(|index| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let source = format!("chat-{index}");
+                    assert_eq!(
+                        mcp_post(port, &source, mcp_init(&source, "2025-11-25")).0,
+                        200
+                    );
+                    barrier.wait();
+                    let (status, _, reply) = mcp_post(
+                        port,
+                        &source,
+                        mcp_call(2, "add_tasks", json!({"tasks":[{"title":source}]})),
+                    );
+                    assert_eq!(status, 200);
+                    let task = mcp_payload(&reply)["tasks"][0].clone();
+                    assert_eq!(task["title"], source);
+                    assert_eq!(task["source"], source);
+                })
+            })
+            .collect();
+        for client in clients {
+            client.join().unwrap();
+        }
+        let (_, _, reply) = mcp_post(port, "reader", mcp_call(3, "list_tasks", json!({})));
+        assert_eq!(mcp_payload(&reply)["tasks"].as_array().unwrap().len(), 12);
+        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 12);
+        assert_eq!(server.port, port);
+    }
+
+    #[test]
+    fn mcp_token_rotation_invalidates_inflight_upload_without_rebinding() {
+        let (_dir, server, writes) = stored_server();
+        let port = server.port;
+        let body = mcp_call(
+            1,
+            "add_tasks",
+            json!({"tasks":[{"title":"revoked request"}]}),
+        )
+        .to_string();
+        let mut stalled = connect(port);
+        let mut head = format!("POST /mcp HTTP/1.1\r\nContent-Length: {}\r\nExpect: 100-continue\r\nConnection: close\r\n", body.len());
+        for (name, value) in mcp_headers(port) {
+            head.push_str(&format!("{name}: {value}\r\n"));
+        }
+        head.push_str("\r\n");
+        stalled.write_all(head.as_bytes()).unwrap();
+        // Receiving 100 Continue proves the old token passed the header gate and
+        // the server is waiting for the body. No timing guesses or sleeps.
+        let mut interim = [0u8; 25];
+        stalled.read_exact(&mut interim).unwrap();
+        assert_eq!(&interim, b"HTTP/1.1 100 Continue\r\n\r\n");
+        server.set_token("replacement-token".into());
+        stalled.write_all(body.as_bytes()).unwrap();
+        let mut rejected = String::new();
+        stalled.read_to_string(&mut rejected).unwrap();
+        assert!(rejected.starts_with("HTTP/1.1 401"), "{rejected}");
+        assert_eq!(
+            mcp_post(port, "codex", mcp_init("Codex", "2025-11-25")).0,
+            401
+        );
+        let mut headers = mcp_headers(port);
+        headers
+            .iter_mut()
+            .find(|(name, _)| name == "Authorization")
+            .unwrap()
+            .1 = "Bearer replacement-token".into();
+        let (status, _, reply) = mcp_wire(
+            port,
+            "POST",
+            &headers,
+            &mcp_call(2, "list_tasks", json!({})).to_string(),
+        );
+        assert_eq!(status, 200);
+        assert!(mcp_payload(&reply)["tasks"].as_array().unwrap().is_empty());
+        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(server.port, port);
+    }
+
+    fn mcp_init(name: &str, version: &str) -> Value {
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+            "protocolVersion":version,"capabilities":{},"clientInfo":{"name":name,"version":"1"}
+        }})
+    }
+
+    fn mcp_call(id: i64, name: &str, arguments: Value) -> Value {
+        json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}})
+    }
+
+    fn mcp_payload(reply: &Value) -> Value {
+        serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn mcp_independent_clients_share_one_listener_and_store() {
+        let (_dir, server, writes) = stored_server();
+        let port = server.port;
+        let (status, head, init) = mcp_post(port, "codex", mcp_init("Codex", "2025-11-25"));
+        assert_eq!(status, 200, "{init}");
+        assert!(head
+            .to_lowercase()
+            .contains("content-type: application/json"));
+        assert!(!head.to_lowercase().contains("mcp-session-id"));
+        assert_eq!(init["result"]["protocolVersion"], "2025-11-25");
+        let (_, _, init2) = mcp_post(port, "claude-code", mcp_init("Claude", "2025-06-18"));
+        assert_eq!(init2["result"]["protocolVersion"], "2025-06-18");
+        let initialized = mcp_post(
+            port,
+            "codex",
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        );
+        assert_eq!((initialized.0, initialized.2), (202, Value::Null));
+        let (_, _, catalog) = mcp_post(
+            port,
+            "codex",
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+        );
+        let tools = catalog["result"]["tools"].as_array().unwrap();
+        assert!(tools.iter().any(|tool| tool["name"] == "add_tasks"));
+        assert!(!tools.iter().any(|tool| tool["name"] == "set_setting"));
+        for (source, title) in [("codex", "first chat"), ("claude-code", "second chat")] {
+            let (_, _, added) = mcp_post(
+                port,
+                source,
+                mcp_call(3, "add_tasks", json!({"tasks":[{"title":title}]})),
+            );
+            assert_eq!(added["result"]["isError"], false);
+            assert_eq!(mcp_payload(&added)["tasks"][0]["source"], source);
+        }
+        let (_, _, listed) = mcp_post(port, "codex", mcp_call(4, "list_tasks", json!({})));
+        assert_eq!(mcp_payload(&listed)["tasks"].as_array().unwrap().len(), 2);
+        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(TcpListener::bind(("127.0.0.1", port)).is_err());
+        let rest = request(port, "/v1/tasks", "test-token", "");
+        let rest: Value = serde_json::from_str(rest.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(rest["tasks"].as_array().unwrap().len(), 2);
+        server.stop();
+        assert!(TcpListener::bind(("127.0.0.1", port)).is_ok());
+    }
 
     struct SocketBackend;
     impl Backend for SocketBackend {
