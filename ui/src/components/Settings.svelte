@@ -8,7 +8,10 @@
   import { cmd, errorText } from "../lib/backend.ts";
 
   onMount(() => {
-    store.loadSeries();
+    // Runtime startup can finish after the main window's first snapshot.
+    // Refresh on every visit as well as listening for live state events.
+    void store.loadApp();
+    void store.loadSeries();
   });
 
   const app = $derived(store.app);

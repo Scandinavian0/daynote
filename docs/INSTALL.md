@@ -2,7 +2,7 @@
 
 ## 安装
 
-从项目 Release 下载 `DayNote-0.1.3-windows-x64-setup.exe`。安装器支持简体中文和英文，默认仅为当前用户安装，创建桌面及开始菜单快捷方式。
+从项目 Release 下载 `DayNote-0.1.4-windows-x64-setup.exe`。安装器支持简体中文和英文，默认仅为当前用户安装，创建桌面及开始菜单快捷方式。
 
 Windows WebView2 Runtime 缺失时安装器会联网安装。当前安装器没有 Windows Authenticode 发布者签名；下载来源及校验值应与项目 Release 一致。
 

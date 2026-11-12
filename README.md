@@ -4,7 +4,7 @@
 
 ## 下载安装
 
-前往 [Releases](https://github.com/Scandinavian0/daynote/releases/latest)，下载 `DayNote-0.1.3-windows-x64-setup.exe` 并运行。
+前往 [Releases](https://github.com/Scandinavian0/daynote/releases/latest)，下载 `DayNote-0.1.4-windows-x64-setup.exe` 并运行。
 
 - 支持 Windows 10 / 11 x64；使用 Microsoft Edge WebView2 Runtime，缺少时安装程序会尝试联网安装。
 - 默认安装到当前用户目录，无需管理员权限。安装后自动创建 **DayNote 桌面快捷方式**，同时提供开始菜单入口和卸载程序。

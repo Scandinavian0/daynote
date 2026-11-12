@@ -93,7 +93,7 @@ async function browserSettings(harness, backend = "") {
         `;
         if (id.replaceAll("\\", "/").endsWith("/src/lib/backend.ts")) return `
           export const inTauri = false;
-          export async function call() { return { series: [] }; }
+          export async function call() { return { series: [], tasks: [], today: "2026-11-13", content: "", days: [], total: 0, done: 0 }; }
           export async function cmd(name, args) { ${backend}; return { ...window.fixtureApp }; }
           export const on = async (event, handler) => { (window.fixtureHandlers ??= {})[event] = handler; return () => {}; };
           export const errorText = error => error.message;
@@ -214,6 +214,35 @@ test("service startup during the initial app-state read updates the visible MCP 
       return oldState;
     }
   `);
+});
+
+test("opening settings rereads settled runtime state when the initial snapshot outlives a startup notification", { skip: !existsSync(chrome) }, async () => {
+  await browserSettings(`
+    const { default: App } = await import("/src/App.svelte");
+    Object.assign(store.app, { http_enabled: true, http_active_port: 0, hotkey: "", http_error: null });
+    window.fixtureApp = JSON.parse(JSON.stringify(store.app));
+    window.appReads = 0;
+    mount(App, { target: document.body }); await settle();
+    assert(window.appReads === 1, "main window must obtain the initial runtime snapshot");
+    assert(window.fixtureHandlers?.["app-state-changed"], "runtime event subscription must exist");
+    // Setup can settle after the initial snapshot. Event delivery is not replayed
+    // to a late/reloaded WebView, so opening settings must also fetch current state.
+    window.fixtureApp.http_active_port = 47821;
+    window.fixtureApp.hotkey = "Ctrl+Alt+Space";
+    document.querySelector('button[title="设置"]').click(); await settle();
+    assert(window.appReads === 2, "opening settings did not request current app_state");
+    const endpoint = () => document.querySelector('[aria-label="复制共享 MCP 地址"]');
+    assert(endpoint(), "settings kept the startup snapshot with no running service");
+    assert(document.querySelector('[aria-label="速记快捷键"]').value === "Ctrl+Alt+Space", "settings kept the empty startup hotkey");
+    endpoint().click(); await settle();
+    assert(window.copied === "http://127.0.0.1:47821/mcp", "settings did not recover the live endpoint");
+    document.querySelector('button[title="设置"]').click(); await settle();
+    window.fixtureApp.http_active_port = 50001;
+    document.querySelector('button[title="设置"]').click(); await settle();
+    assert(window.appReads === 3, "reopening settings must refresh again");
+    endpoint().click(); await settle();
+    assert(window.copied === "http://127.0.0.1:50001/mcp", "reopened settings used stale runtime state");
+  `, `if (name === "app_state") window.appReads++;`);
 });
 
 test("a rejected HTTP enable restores the native checkbox to the saved disabled state", { skip: !existsSync(chrome) }, async () => {
