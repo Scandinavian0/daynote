@@ -321,6 +321,19 @@ pub fn reminder_sync(app: &AppHandle) {
     let (wa, scale) = primary(app);
     let r = geometry::bottom_right(wa, geometry::scaled((geometry::REMINDER_WIDTH, height), scale));
     sys::show_no_activate(hwnd.0, r.x, r.y, r.w, r.h);
+    crate::reminder_surface::repair(hwnd.0);
+}
+
+/// Check an already visible reminder only; never reopen a dismissed/hidden window.
+pub fn reminder_check_surface_later(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(win) = handle.get_webview_window(REMINDER) {
+            if let Ok(hwnd) = win.hwnd() {
+                crate::reminder_surface::repair(hwnd.0);
+            }
+        }
+    });
 }
 
 /// Same as [`reminder_sync`], callable from any thread.

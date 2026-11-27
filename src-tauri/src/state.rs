@@ -61,7 +61,7 @@ impl Shell {
             http_error: Mutex::new(None),
             http_port: AtomicU16::new(0),
             glass: AtomicBool::new(false),
-            reminder_height: Mutex::new(160.0),
+            reminder_height: Mutex::new(0.0),
             tray_tip: Mutex::new(String::new()),
             token: Mutex::new(token),
             data_dir,

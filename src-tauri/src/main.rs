@@ -8,6 +8,7 @@ mod geometry;
 mod http;
 mod prefs;
 mod reminders;
+mod reminder_surface;
 mod scheduler;
 mod startup;
 mod state;

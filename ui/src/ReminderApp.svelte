@@ -10,25 +10,57 @@
   let cards = $state<Card[]>([]);
   let snoozeFor = $state<string | null>(null);
   let stack = $state<HTMLElement>();
+  let loadVersion = 0;
+  let disposed = false;
+  let pendingHeight: number | null = null;
+  let resizing = false;
+
+  async function reportHeight() {
+    if (disposed || !stack) return;
+    pendingHeight = cards.length ? Math.ceil(stack.getBoundingClientRect().height) : 0;
+    if (resizing) return;
+    resizing = true;
+    try {
+      // Native IPC requests can arrive out of order. An old zero must never hide a
+      // newer card; send one measurement at a time, keeping only the latest waiting.
+      while (pendingHeight !== null && !disposed) {
+        const height = pendingHeight;
+        pendingHeight = null;
+        try { await cmd("reminder_resize", { height }); } catch { /* Next layout/load retries. */ }
+      }
+    } finally { resizing = false; }
+  }
+
+  // Explicit UI changes also resize immediately; ResizeObserver covers font/layout
+  // changes after rendering (including wrapped snooze buttons).
+  $effect(() => {
+    cards; snoozeFor;
+    if (stack) tick().then(reportHeight);
+  });
 
   async function load() {
+    const version = ++loadVersion;
+    let next: Card[];
     try {
-      cards = await cmd<Card[]>("reminder_cards");
+      next = await cmd<Card[]>("reminder_cards");
     } catch {
-      cards = [];
+      next = [];
     }
-    await tick();
-    // The window is only as tall as its cards, so nothing else on screen is covered.
-    if (stack) cmd("reminder_resize", { height: Math.ceil(stack.getBoundingClientRect().height) }).catch(() => {});
+    if (disposed || version !== loadVersion) return;
+    cards = next;
   }
 
   onMount(() => {
-    load();
-    const off = on("reminders-changed", load);
-    return () => off.then((fn) => fn());
+    const observer = new ResizeObserver(reportHeight);
+    if (stack) observer.observe(stack);
+    const off = on("reminders-changed", load).catch(() => null);
+    // Read after subscribing so a change during native listener registration is seen.
+    off.then(() => { if (!disposed) load(); });
+    return () => { disposed = true; observer.disconnect(); off.then((fn) => fn?.()); };
   });
 
   async function act(card: Card, action: string, minutes?: number) {
+    ++loadVersion;
     snoozeFor = null;
     cards = cards.filter((c) => c.id !== card.id);
     try {

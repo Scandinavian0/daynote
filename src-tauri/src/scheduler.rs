@@ -43,6 +43,7 @@ pub fn spawn_watcher(app: AppHandle) {
             let mut last = shell(&app).data_version();
             loop {
                 std::thread::sleep(Duration::from_secs(1));
+                win::reminder_check_surface_later(&app);
                 let v = shell(&app).data_version();
                 if v.is_some() && v != last {
                     last = v;
